@@ -74,10 +74,12 @@ int main(int argc, char *argv[]) {
         if (argc < 4) { printf("Missing values.\n"); res = DE_ERR_INVAL; goto cleanup; }
         
         cell_t *new_row = calloc(table.col_count, sizeof(cell_t));
+        if (!new_row) { res = DE_ERR_MEM; goto cleanup; }
         char *vals = strdup(argv[3]);
+        if (!vals) { free(new_row); res = DE_ERR_MEM; goto cleanup; }
         char *token = strtok(vals, ",");
         int c_idx = 0;
-        
+
         while(token && c_idx < table.col_count) {
             char *eq = strchr(token, '=');
             if(eq) {

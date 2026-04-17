@@ -936,7 +936,7 @@ static uint32_t fnv1a_hash(const char *str)
  */
 int de_vocab_lookup_id(const table_t *vocab, const char *word, uint32_t *out_token_id)
 {
-    if (!vocab || !vocab->is_mmap || vocab->file_type != 2)
+    if (!vocab || !vocab->is_mmap || vocab->file_type != 2 || !word || !out_token_id)
     {
         return DE_ERR_INVAL; // Must be a loaded .ovoc file
     }
@@ -1015,7 +1015,7 @@ int de_vocab_lookup_batch(const table_t *vocab,
     int found = 0;
     for (int i = 0; i < count; i++)
     {
-        if (de_vocab_lookup_id(vocab, words[i], &tokens_out[i]) == DE_OK)
+        if (words[i] && de_vocab_lookup_id(vocab, words[i], &tokens_out[i]) == DE_OK)
             found++;
         else
             tokens_out[i] = UINT32_MAX; /* TDE_TOKEN_UNKNOWN */
@@ -1323,6 +1323,15 @@ int de_build_vocab(const char **words, int count, const char *filepath)
     if (!words || count <= 0 || !filepath)
         return DE_ERR_INVAL;
 
+    /* Acquire exclusive write lock via a sidecar .lock file.
+     * Using a sidecar avoids the Windows restriction that a file
+     * cannot be renamed while it is open/locked.                  */
+    char lock_path[MAX_PATH_LEN];
+    snprintf(lock_path, MAX_PATH_LEN, "%s.lock", filepath);
+    int lock_fd = de_platform_open_for_lock(lock_path);
+    if (lock_fd != -1)
+        de_platform_lock(lock_fd, 1 /* exclusive */);
+
     /* Hash table capacity: next power-of-2 >= count*1.5, minimum 16 */
     uint32_t cap = 16;
     while (cap < (uint32_t)((unsigned)count + (unsigned)count / 2u + 1u))
@@ -1344,8 +1353,10 @@ int de_build_vocab(const char **words, int count, const char *filepath)
     char temp_path[MAX_PATH_LEN];
     snprintf(temp_path, MAX_PATH_LEN, "%s.tmp", filepath);
     FILE *fp = fopen(temp_path, "wb");
-    if (!fp)
+    if (!fp) {
+        if (lock_fd != -1) { de_platform_unlock(lock_fd); de_platform_close_fd(lock_fd); }
         return DE_ERR_IO;
+    }
 
     /* Initialise cleanup-tracked pointers to NULL *before* any goto fail,
      * so the fail: label can safely call free() on them unconditionally.    */
@@ -1378,7 +1389,10 @@ int de_build_vocab(const char **words, int count, const char *filepath)
         for (int i = 0; i < count; i++)
         {
             const char *word  = words[i];
-            uint16_t    wlen  = (uint16_t)strlen(word);
+            if (!word) goto fail; /* NULL entry in words[] is invalid */
+            size_t      raw_len = strlen(word);
+            if (raw_len > UINT16_MAX) goto fail; /* word too long for 16-bit key_len field */
+            uint16_t    wlen  = (uint16_t)raw_len;
             uint32_t    token = (uint32_t)i;
             uint16_t    flags = 0;
 
@@ -1435,11 +1449,12 @@ int de_build_vocab(const char **words, int count, const char *filepath)
 
 #ifdef _WIN32
     if (MoveFileExA(temp_path, filepath, MOVEFILE_REPLACE_EXISTING) == 0)
-    { de_unlink(temp_path); return DE_ERR_IO; }
+    { de_unlink(temp_path); if (lock_fd != -1) { de_platform_unlock(lock_fd); de_platform_close_fd(lock_fd); } return DE_ERR_IO; }
 #else
     if (rename(temp_path, filepath) != 0)
-    { de_unlink(temp_path); return DE_ERR_IO; }
+    { de_unlink(temp_path); if (lock_fd != -1) { de_platform_unlock(lock_fd); de_platform_close_fd(lock_fd); } return DE_ERR_IO; }
 #endif
+    if (lock_fd != -1) { de_platform_unlock(lock_fd); de_platform_close_fd(lock_fd); }
     return DE_OK;
 
 fail:
@@ -1447,6 +1462,7 @@ fail:
     free(hash_table);    /* NULL-safe: initialised to NULL at top of function */
     free(word_offsets);
     de_unlink(temp_path);
+    if (lock_fd != -1) { de_platform_unlock(lock_fd); de_platform_close_fd(lock_fd); }
     return DE_ERR_IO;
 }
 
@@ -1510,12 +1526,21 @@ int de_build_vectors(const float **vectors, int count, uint32_t dim, const char 
     if (!vectors || count <= 0 || dim == 0 || !filepath)
         return DE_ERR_INVAL;
 
+    /* Acquire exclusive write lock via a sidecar .lock file. */
+    char lock_path[MAX_PATH_LEN];
+    snprintf(lock_path, MAX_PATH_LEN, "%s.lock", filepath);
+    int lock_fd = de_platform_open_for_lock(lock_path);
+    if (lock_fd != -1)
+        de_platform_lock(lock_fd, 1 /* exclusive */);
+
     char temp_path[MAX_PATH_LEN];
     snprintf(temp_path, MAX_PATH_LEN, "%s.tmp", filepath);
     FILE *fp = fopen(temp_path, "wb");
-    if (!fp) return DE_ERR_IO;
+    int res = fp ? build_vectors_impl(fp, temp_path, filepath, count, dim, vectors, NULL)
+                 : DE_ERR_IO;
 
-    return build_vectors_impl(fp, temp_path, filepath, count, dim, vectors, NULL);
+    if (lock_fd != -1) { de_platform_unlock(lock_fd); de_platform_close_fd(lock_fd); }
+    return res;
 }
 
 /* --- VECTOR BUILDER (.ovec) — flat float* interface (no intermediate allocation) --- */
@@ -1529,12 +1554,21 @@ int de_build_vectors_flat(const float *data, int count, uint32_t dim, const char
     if (!data || count <= 0 || dim == 0 || !filepath)
         return DE_ERR_INVAL;
 
+    /* Acquire exclusive write lock via a sidecar .lock file. */
+    char lock_path[MAX_PATH_LEN];
+    snprintf(lock_path, MAX_PATH_LEN, "%s.lock", filepath);
+    int lock_fd = de_platform_open_for_lock(lock_path);
+    if (lock_fd != -1)
+        de_platform_lock(lock_fd, 1 /* exclusive */);
+
     char temp_path[MAX_PATH_LEN];
     snprintf(temp_path, MAX_PATH_LEN, "%s.tmp", filepath);
     FILE *fp = fopen(temp_path, "wb");
-    if (!fp) return DE_ERR_IO;
+    int res = fp ? build_vectors_impl(fp, temp_path, filepath, count, dim, NULL, data)
+                 : DE_ERR_IO;
 
-    return build_vectors_impl(fp, temp_path, filepath, count, dim, NULL, data);
+    if (lock_fd != -1) { de_platform_unlock(lock_fd); de_platform_close_fd(lock_fd); }
+    return res;
 }
 
 /* --- WRAPPERS: Logical Name Support --- */

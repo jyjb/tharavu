@@ -69,7 +69,7 @@ int de_platform_lock(int fd, int exclusive) {
     fl.l_start = 0;
     fl.l_len = 1; // Lock first byte
     
-    if (fcntl(fd, F_SETLK, &fl) == -1) {
+    if (fcntl(fd, F_SETLKW, &fl) == -1) {
         return DE_ERR_LOCK;
     }
     return DE_OK;
@@ -138,7 +138,8 @@ void de_platform_unmap(void *addr, size_t len, int fd) {
 
 /* Helper to read safely from mmap or file */
 int de_safe_read(void *base, size_t base_size, uint64_t offset, void *dst, size_t count) {
-    if (offset + count > base_size) return DE_ERR_CORRUPT;
+    if (!base || !dst) return DE_ERR_CORRUPT;
+    if (offset > base_size || count > base_size - offset) return DE_ERR_CORRUPT;
     memcpy(dst, (uint8_t*)base + offset, count);
     return DE_OK;
 }

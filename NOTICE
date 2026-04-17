@@ -1,8 +1,19 @@
-﻿Tharavu Data Engine
+Tharavu Data Engine
 
 Copyright 2026 Jeyaraj
 
-Licensed under GNU General Public License v3 (GPL v3).
+This project is licensed under the GNU General Public License v3.0 (GPL v3).
+The full license text is available in the LICENSE file or at:
+https://www.gnu.org/licenses/gpl-3.0.html
 
-If you redistribute or use this software publicly, please retain the
-project name and author attribution in your documentation.
+---
+
+Attribution Request (non-binding)
+
+If you use Tharavu in a project, paper, or product — commercial or
+otherwise — a mention of the original project and author is appreciated
+but not legally required.
+
+Example attribution:
+  "This project uses the Tharavu Data Engine by Jeyaraj
+   (https://github.com/jeyaraj/tharavu-data-engine), licensed under GPL v3."

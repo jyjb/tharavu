@@ -33,15 +33,8 @@ typedef struct
     int fd; /* File descriptor for locking/mmap */
     int is_mmap;
     int file_type; /* 1=ODAT, 2=OVOC, 3=OVEC */
-    int lock_held; /* Boolean for write lock */
     char filepath[MAX_PATH_LEN];
     uint32_t max_row_stride; /* Running maximum of serialised row sizes (ODAT) */
-
-    /* Contiguous slab for row data (ODAT only; v1.1+ format).
-     * When rows_slab != NULL, rows[i] points into this slab at offset
-     * i * col_count * sizeof(cell_t). When rows_slab == NULL, each row is
-     * a separate malloc (pre-v1.1 fragmented layout). */
-    cell_t *rows_slab;
 } table_t;
 
 typedef struct
