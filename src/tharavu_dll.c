@@ -574,6 +574,24 @@ THARAVU_API int THARAVU_CALL tde_vector_get_batch(tde_handle_t h,
     return res;
 }
 
+/* ── Top-k vector search ─────────────────────────────────────────────────── */
+
+THARAVU_API int THARAVU_CALL tde_vector_search_topk(tde_handle_t  h,
+                                                     const float  *query_vec,
+                                                     uint32_t      dim,
+                                                     uint32_t      k,
+                                                     uint32_t     *ids_out,
+                                                     float        *scores_out)
+{
+    g_last_err = TDE_OK;
+    table_handle_t *th = to_table(h);
+    if (!th || !query_vec || dim == 0 || k == 0 || !ids_out || !scores_out)
+        return set_err(TDE_ERR_INVAL);
+    int res = de_vector_search_topk(&th->table, query_vec, dim, k, ids_out, scores_out);
+    if (res < 0) return set_err(res);
+    return res; /* result count — non-negative, not an error code */
+}
+
 /* ── File builders ───────────────────────────────────────────────────────── */
 
 THARAVU_API int THARAVU_CALL tde_build_vocab(const char *filepath,

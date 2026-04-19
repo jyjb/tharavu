@@ -5,6 +5,7 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <errno.h>
+#include <math.h>
 
 #include <sys/stat.h> // For mkdir
 
@@ -1310,6 +1311,115 @@ int de_delete_row(table_t *table, int row_index)
     return DE_OK;
 }
 
+/* --- HIGH PERFORMANCE: brute-force cosine top-k vector search (.ovec) --- */
+
+typedef struct { float score; uint32_t id; } topk_entry_t;
+
+static void topk_sift_down(topk_entry_t *h, uint32_t n, uint32_t i)
+{
+    for (;;) {
+        uint32_t s = i, l = 2*i+1, r = 2*i+2;
+        if (l < n && h[l].score < h[s].score) s = l;
+        if (r < n && h[r].score < h[s].score) s = r;
+        if (s == i) break;
+        topk_entry_t t = h[i]; h[i] = h[s]; h[s] = t;
+        i = s;
+    }
+}
+
+static int topk_cmp_desc(const void *a, const void *b)
+{
+    float sa = ((const topk_entry_t *)a)->score;
+    float sb = ((const topk_entry_t *)b)->score;
+    return (sa > sb) ? -1 : (sa < sb) ? 1 : 0;
+}
+
+/*
+ * Brute-force cosine-similarity top-k search over an entire .ovec store.
+ * query_vec must have exactly dim floats matching the file's stored dimension.
+ * Results written to ids_out[0..return_value-1] and scores_out[0..return_value-1],
+ * sorted best-first (highest cosine similarity first).
+ * Returns the number of results written (≤k) or a negative DE_ERR_* code.
+ */
+int de_vector_search_topk(const table_t *vectors,
+                           const float   *query_vec, uint32_t dim,
+                           uint32_t       k,
+                           uint32_t      *ids_out,   float *scores_out)
+{
+    if (!vectors || !query_vec || dim == 0 || k == 0 || !ids_out || !scores_out)
+        return DE_ERR_INVAL;
+    if (!vectors->is_mmap || vectors->file_type != 3)
+        return DE_ERR_INVAL;
+
+    ovec_header_t *hdr = (ovec_header_t *)vectors->mmap_ptr;
+    uint32_t n = hdr->row_count;
+    if (n == 0) return 0;
+    if (hdr->dim != dim) return DE_ERR_INVAL;
+
+    uint32_t actual_k = (k < n) ? k : n;
+
+    /* Pre-compute query L2 norm (double accumulator for precision) */
+    double qnorm_sq = 0.0;
+    for (uint32_t i = 0; i < dim; i++)
+        qnorm_sq += (double)query_vec[i] * query_vec[i];
+    if (qnorm_sq < 1e-20)
+        return 0; /* zero-magnitude query — undefined similarity */
+    float qnorm = (float)sqrt(qnorm_sq);
+
+    topk_entry_t *heap = (topk_entry_t *)malloc(actual_k * sizeof(topk_entry_t));
+    if (!heap) return DE_ERR_MEM;
+
+    uint32_t filled = 0;
+
+    for (uint32_t row = 0; row < n; row++) {
+        uint32_t rdim = 0;
+        const float *vec = de_vector_get(vectors, row, &rdim);
+        if (!vec || rdim != dim) continue;
+
+        double dot = 0.0, vnorm_sq = 0.0;
+        for (uint32_t i = 0; i < dim; i++) {
+            dot      += (double)query_vec[i] * vec[i];
+            vnorm_sq += (double)vec[i] * vec[i];
+        }
+        float score;
+        if (vnorm_sq < 1e-20) {
+            score = 0.0f;
+        } else {
+            score = (float)(dot / (qnorm * sqrt(vnorm_sq)));
+            /* clamp to [-1, 1] against floating-point rounding */
+            if (score >  1.0f) score =  1.0f;
+            if (score < -1.0f) score = -1.0f;
+        }
+
+        if (filled < actual_k) {
+            heap[filled].score = score;
+            heap[filled].id    = row;
+            filled++;
+            /* Build min-heap once the buffer is full */
+            if (filled == actual_k) {
+                for (int32_t i = (int32_t)(actual_k / 2) - 1; i >= 0; i--)
+                    topk_sift_down(heap, actual_k, (uint32_t)i);
+            }
+        } else if (score > heap[0].score) {
+            /* New score beats the current worst — replace heap root and re-heapify */
+            heap[0].score = score;
+            heap[0].id    = row;
+            topk_sift_down(heap, actual_k, 0);
+        }
+    }
+
+    /* Sort final results descending by score */
+    qsort(heap, filled, sizeof(topk_entry_t), topk_cmp_desc);
+
+    for (uint32_t i = 0; i < filled; i++) {
+        ids_out[i]    = heap[i].id;
+        scores_out[i] = heap[i].score;
+    }
+
+    free(heap);
+    return (int)filled;
+}
+
 /* --- VOCABULARY BUILDER (.ovoc) --- */
 /*
  * File layout (v1.1):
@@ -1573,18 +1683,17 @@ int de_build_vectors_flat(const float *data, int count, uint32_t dim, const char
 
 /* --- WRAPPERS: Logical Name Support --- */
 
-/* Load: de_load_logical("mydb.users", &table) */
+/* Load: de_load_logical("mydb.users", &table) — detects file type from magic bytes */
 int de_load_logical(const char *logical_name, table_t *table) {
+    if (!logical_name || !table) return DE_ERR_INVAL;
     char path[MAX_PATH_LEN];
-    de_resolve_path(logical_name, table->file_type, path, sizeof(path));
-    // Note: We don't know file_type before loading. 
-    // FIX: We need to try all extensions or assume .odat for generic load?
-    // Better approach: Pass expected type or try .odat first.
-    // Let's assume user knows the type or we try .odat by default for generic tables.
-    
-    // Revised Strategy: User must specify type or we try common ones.
-    // For simplicity, let's make specific loaders:
-    return DE_ERR_INVAL; // Placeholder, see below specific implementations
+    /* Try each extension in order; de_load() detects the actual type from magic bytes */
+    for (int ft = 1; ft <= 3; ft++) {
+        if (de_resolve_path(logical_name, ft, path, sizeof(path)) != DE_OK) continue;
+        if (access(path, 0) != 0) continue; /* file not found */
+        return de_load(table, path);
+    }
+    return DE_ERR_NOTFOUND;
 }
 
 /* Specific Loaders */

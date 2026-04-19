@@ -265,6 +265,23 @@ THARAVU_API int THARAVU_CALL tde_vector_get_batch(tde_handle_t    h,
                                                    float          *out_buf,
                                                    uint32_t       *out_dim);
 
+/* ── Top-k vector search ─────────────────────────────────────────────────── */
+
+/* Brute-force cosine-similarity top-k search over the entire .ovec store.
+ * query_vec:  caller-allocated float[dim] query embedding.
+ * dim:        must match the .ovec file's stored dimension.
+ * k:          maximum number of results to return.
+ * ids_out:    caller-allocated uint32_t[k] — receives result row IDs.
+ * scores_out: caller-allocated float[k]    — receives cosine scores in [-1, 1].
+ * Results are written sorted best-first (highest cosine similarity first).
+ * Returns the actual number of results written (≤k), or a negative error code. */
+THARAVU_API int THARAVU_CALL tde_vector_search_topk(tde_handle_t  h,
+                                                     const float  *query_vec,
+                                                     uint32_t      dim,
+                                                     uint32_t      k,
+                                                     uint32_t     *ids_out,
+                                                     float        *scores_out);
+
 /* ── File builders ───────────────────────────────────────────────────────── */
 
 /* Build a vocabulary (.ovoc) file from an array of words.

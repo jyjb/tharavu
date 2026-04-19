@@ -157,4 +157,15 @@ int de_build_vectors_flat(const float *data, int count, uint32_t dim,
 int de_find_row_ids(const table_t *table, const char *column, const char *value,
                     int *ids_out, int max_results);
 
+/* Brute-force cosine-similarity top-k search over an entire .ovec store.
+ * query_vec: float[dim] query embedding. dim must match the file's stored dimension.
+ * k:         maximum number of results.
+ * ids_out:   caller-allocated uint32_t[k].
+ * scores_out: caller-allocated float[k].
+ * Results sorted best-first. Returns result count (≤k) or negative DE_ERR_* code. */
+int de_vector_search_topk(const table_t *vectors,
+                           const float   *query_vec, uint32_t dim,
+                           uint32_t       k,
+                           uint32_t      *ids_out,   float *scores_out);
+
 #endif /* THARAVU_DATA_ENGINE_H */
