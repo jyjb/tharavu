@@ -102,7 +102,7 @@ int main(void)
     de_destroy(table);
 
     const char *words[] = {"hello", "world", "ai", "data"};
-    if (de_build_vocab_logical("demo.vocab", words, 4) != DE_OK)
+    if (de_build_vocab_logical("demo.vocab", words, 4, NULL, 0, NULL) != DE_OK)
     {
         fprintf(stderr, "Failed to build vocab.ovoc\n");
         return 1;

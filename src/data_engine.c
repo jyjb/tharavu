@@ -945,6 +945,9 @@ int de_vocab_lookup_id(const table_t *vocab, const char *word, uint32_t *out_tok
     ovoc_header_t *hdr = (ovoc_header_t *)vocab->mmap_ptr;
     uint8_t *base = (uint8_t *)vocab->mmap_ptr;
 
+    /* Bytes to skip past the embedded vector (zero for files without vectors) */
+    uint32_t vec_skip = hdr->dim * (uint32_t)sizeof(float);
+
     // 1. Calculate Hash of the input word
     uint32_t hash = fnv1a_hash(word);
     uint32_t cap = hdr->hash_cap;
@@ -970,20 +973,17 @@ int de_vocab_lookup_id(const table_t *vocab, const char *word, uint32_t *out_tok
             return DE_ERR_NOTFOUND;
         }
 
-        // Slot points to a data row.
-        // Row Layout: [token_id (4)] [key_len (2)] [flags (2)] [word_string...]
-        // Validate the fixed 8-byte header of the row fits in the file.
-        if (slot_offset + 8 > vocab->mmap_size)
+        // Row Layout: [token_id (4)] [key_len (2)] [flags (2)] [vec: dim*4] [word_string...]
+        if (slot_offset + 8 + vec_skip > vocab->mmap_size)
             return DE_ERR_CORRUPT;
 
         uint8_t *row_ptr = base + slot_offset;
         uint16_t key_len = read_u16_le(row_ptr + 4);
 
-        // Validate that the word bytes also fit in the file.
-        if (slot_offset + 8 + key_len > vocab->mmap_size)
+        if (slot_offset + 8 + vec_skip + key_len > vocab->mmap_size)
             return DE_ERR_CORRUPT;
 
-        char *row_word = (char *)(row_ptr + 8);
+        char *row_word = (char *)(row_ptr + 8 + vec_skip);
 
         // Quick length check first (fast fail)
         size_t word_len = strlen(word);
@@ -1031,8 +1031,9 @@ int de_vocab_lookup_batch(const table_t *vocab,
  * Returns a pointer directly into the mmap region — caller must NOT free it.
  * Returns NULL for out-of-range token_id or for pre-v1.1 files.
  */
-const char *de_vocab_reverse_lookup(const table_t *vocab, uint32_t token_id,
-                                     uint16_t *out_len)
+const char *de_vocab_reverse_lookup_ex(const table_t *vocab, uint32_t token_id,
+                                        uint16_t *out_len, uint16_t *out_flags,
+                                        const float **out_vec)
 {
     if (!vocab || !vocab->is_mmap || vocab->file_type != 2)
         return NULL;
@@ -1051,20 +1052,30 @@ const char *de_vocab_reverse_lookup(const table_t *vocab, uint32_t token_id,
     if (rev_off + (uint64_t)hdr->vocab_count * sizeof(uint64_t) > vocab->mmap_size)
         return NULL;
 
+    uint32_t vec_skip = hdr->dim * (uint32_t)sizeof(float);
+
     uint64_t row_off = read_u64_le(base + rev_off + (uint64_t)token_id * sizeof(uint64_t));
 
-    /* Validate record header (8 bytes: token_id[4] + key_len[2] + flags[2]) */
-    if (row_off + 8 > vocab->mmap_size)
+    /* Validate record header (8 bytes: token_id[4] + key_len[2] + flags[2]) + vector */
+    if (row_off + 8 + vec_skip > vocab->mmap_size)
         return NULL;
 
     uint8_t  *row     = base + row_off;
     uint16_t  key_len = read_u16_le(row + 4);
 
-    if (row_off + 8 + key_len > vocab->mmap_size)
+    if (row_off + 8 + vec_skip + key_len > vocab->mmap_size)
         return NULL;
 
-    if (out_len) *out_len = key_len;
-    return (const char *)(row + 8); /* zero-copy pointer into mmap */
+    if (out_len)   *out_len   = key_len;
+    if (out_flags) *out_flags = read_u16_le(row + 6);
+    if (out_vec)   *out_vec   = (hdr->dim > 0) ? (const float *)(row + 8) : NULL;
+    return (const char *)(row + 8 + vec_skip); /* zero-copy pointer into mmap */
+}
+
+const char *de_vocab_reverse_lookup(const table_t *vocab, uint32_t token_id,
+                                     uint16_t *out_len)
+{
+    return de_vocab_reverse_lookup_ex(vocab, token_id, out_len, NULL, NULL);
 }
 
 /* --- BULK REVERSE: token_id[] → word[] (zero-copy, no allocation) --- */
@@ -1422,15 +1433,22 @@ int de_vector_search_topk(const table_t *vectors,
 
 /* --- VOCABULARY BUILDER (.ovoc) --- */
 /*
- * File layout (v1.1):
- *   [  0..127 ] ovoc_header_t
+ * File layout (v1.2, dim > 0):
+ *   [  0..127 ] ovoc_header_t   (hdr.dim = dim, version_minor = 2)
  *   [128..128+cap*8-1] hash table  (uint64_t[cap], sentinel = 0xFFFFFFFFFFFFFFFF)
- *   [data_off .. ] word records    ([token_id u32][key_len u16][flags u16][word bytes])
+ *   [data_off .. ] word records    ([token_id u32][key_len u16][flags u16][dim*4 float vec][word bytes])
  *   [rev_off  .. ] reverse index   (uint64_t[vocab_count]: rev[token_id] = file_offset_of_record)
+ *
+ * When dim == 0 (no embedded vectors) this degenerates to the v1.1 layout:
+ *   record = [token_id u32][key_len u16][flags u16][word bytes]
+ * Existing v1.1 files (hdr.dim == 0) are read correctly by the new reader.
  */
-int de_build_vocab(const char **words, int count, const char *filepath)
+int de_build_vocab(const char **words, int count, const char *filepath,
+                   const float *vectors, uint32_t dim, const uint16_t *flags)
 {
     if (!words || count <= 0 || !filepath)
+        return DE_ERR_INVAL;
+    if (dim > 0 && !vectors)
         return DE_ERR_INVAL;
 
     /* Acquire exclusive write lock via a sidecar .lock file.
@@ -1454,8 +1472,9 @@ int de_build_vocab(const char **words, int count, const char *filepath)
     memset(&hdr, 0, sizeof(hdr));
     memcpy(hdr.magic, MAGIC_OVOC, 4);
     hdr.version_major = VERSION_MAJOR;
-    hdr.version_minor = 1;           /* v1.1: includes reverse index */
+    hdr.version_minor = (dim > 0) ? 2 : 1;  /* v1.2: embedded vectors; v1.1: word-only */
     hdr.vocab_count   = (uint32_t)count;
+    hdr.dim           = dim;
     hdr.hash_cap      = cap;
     hdr.hash_offset   = hash_off;
     hdr.data_offset   = data_off;
@@ -1503,8 +1522,8 @@ int de_build_vocab(const char **words, int count, const char *filepath)
             size_t      raw_len = strlen(word);
             if (raw_len > UINT16_MAX) goto fail; /* word too long for 16-bit key_len field */
             uint16_t    wlen  = (uint16_t)raw_len;
-            uint32_t    token = (uint32_t)i;
-            uint16_t    flags = 0;
+            uint32_t    token    = (uint32_t)i;
+            uint16_t    tok_flags = flags ? flags[i] : 0;
 
             /* Record offset for the reverse index */
             word_offsets[i] = current_data_offset;
@@ -1522,14 +1541,20 @@ int de_build_vocab(const char **words, int count, const char *filepath)
             }
             if (probes >= cap) goto fail; /* hash table full — shouldn't happen */
 
-            /* Write record: [token_id(4)][key_len(2)][flags(2)][word(wlen)] */
-            if (fwrite(&token, 1, 4,    fp) != 4    ||
-                fwrite(&wlen,  1, 2,    fp) != 2    ||
-                fwrite(&flags, 1, 2,    fp) != 2    ||
-                fwrite(word,   1, wlen, fp) != wlen)
+            /* Write record: [token_id(4)][key_len(2)][flags(2)][dim floats][word(wlen)] */
+            if (fwrite(&token,     1, 4,    fp) != 4    ||
+                fwrite(&wlen,      1, 2,    fp) != 2    ||
+                fwrite(&tok_flags, 1, 2,    fp) != 2)
+                goto fail;
+            if (dim > 0) {
+                const float *vec = vectors + (size_t)i * dim;
+                if (fwrite(vec, sizeof(float), dim, fp) != dim)
+                    goto fail;
+            }
+            if (fwrite(word, 1, wlen, fp) != wlen)
                 goto fail;
 
-            current_data_offset += 4u + 2u + 2u + wlen;
+            current_data_offset += 4u + 2u + 2u + (uint64_t)dim * sizeof(float) + wlen;
         }
 
         /* --- Reverse index: uint64_t[count] ordered by token_id --- */
@@ -1575,6 +1600,7 @@ fail:
     if (lock_fd != -1) { de_platform_unlock(lock_fd); de_platform_close_fd(lock_fd); }
     return DE_ERR_IO;
 }
+
 
 /* --- VECTOR BUILDER HELPERS --- */
 /*
@@ -1723,10 +1749,11 @@ int de_save_logical(const char *logical_name, const table_t *table) {
 }
 
 /* Builder Wrappers */
-int de_build_vocab_logical(const char *logical_name, const char **words, int count) {
+int de_build_vocab_logical(const char *logical_name, const char **words, int count,
+                            const float *vectors, uint32_t dim, const uint16_t *flags) {
     char path[MAX_PATH_LEN];
     if (de_resolve_path(logical_name, 2, path, sizeof(path)) != DE_OK) return DE_ERR_INVAL;
-    return de_build_vocab(words, count, path);
+    return de_build_vocab(words, count, path, vectors, dim, flags);
 }
 
 int de_build_vectors_logical(const char *logical_name, const float **vectors, int count, uint32_t dim) {

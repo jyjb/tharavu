@@ -513,6 +513,20 @@ THARAVU_API const char *THARAVU_CALL tde_vocab_reverse_lookup(tde_handle_t h,
     return p;
 }
 
+THARAVU_API const char *THARAVU_CALL tde_vocab_reverse_lookup_ex(tde_handle_t  h,
+                                                                   uint32_t      token_id,
+                                                                   uint16_t     *out_len,
+                                                                   uint16_t     *out_flags,
+                                                                   const float **out_vec)
+{
+    g_last_err = TDE_OK;
+    table_handle_t *th = to_table(h);
+    if (!th) { set_err(TDE_ERR_INVAL); return NULL; }
+    const char *p = de_vocab_reverse_lookup_ex(&th->table, token_id, out_len, out_flags, out_vec);
+    if (!p) set_err(TDE_ERR_NOTFOUND);
+    return p;
+}
+
 THARAVU_API int THARAVU_CALL tde_vocab_reverse_batch(tde_handle_t h,
                                                       const uint32_t *token_ids,
                                                       int count,
@@ -594,20 +608,30 @@ THARAVU_API int THARAVU_CALL tde_vector_search_topk(tde_handle_t  h,
 
 /* ── File builders ───────────────────────────────────────────────────────── */
 
-THARAVU_API int THARAVU_CALL tde_build_vocab(const char *filepath,
-                                              const char **words, int count)
+THARAVU_API int THARAVU_CALL tde_build_vocab(const char     *filepath,
+                                              const char    **words,
+                                              int             count,
+                                              const float    *vectors,
+                                              uint32_t        dim,
+                                              const uint16_t *flags)
 {
     g_last_err = TDE_OK;
     if (!filepath || !words || count <= 0) return set_err(TDE_ERR_INVAL);
-    return set_err(de_build_vocab(words, count, filepath));
+    if (dim > 0 && !vectors) return set_err(TDE_ERR_INVAL);
+    return set_err(de_build_vocab(words, count, filepath, vectors, dim, flags));
 }
 
-THARAVU_API int THARAVU_CALL tde_build_vocab_logical(const char *logical_name,
-                                                      const char **words, int count)
+THARAVU_API int THARAVU_CALL tde_build_vocab_logical(const char     *logical_name,
+                                                      const char    **words,
+                                                      int             count,
+                                                      const float    *vectors,
+                                                      uint32_t        dim,
+                                                      const uint16_t *flags)
 {
     g_last_err = TDE_OK;
     if (!logical_name || !words || count <= 0) return set_err(TDE_ERR_INVAL);
-    return set_err(de_build_vocab_logical(logical_name, words, count));
+    if (dim > 0 && !vectors) return set_err(TDE_ERR_INVAL);
+    return set_err(de_build_vocab_logical(logical_name, words, count, vectors, dim, flags));
 }
 
 /*

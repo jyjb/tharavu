@@ -76,7 +76,8 @@ int de_update_cell(table_t *table, int row, int col, const cell_t *new_value);
 /* Delete a row by index (in memory). Call de_save() to write to disk. */
 int de_delete_row(table_t *table, int row_index);
 
-int de_build_vocab(const char **words, int count, const char *filepath);
+int de_build_vocab(const char **words, int count, const char *filepath,
+                   const float *vectors, uint32_t dim, const uint16_t *flags);
 int de_build_vectors(const float **vectors, int count, uint32_t dim, const char *filepath);
 int de_build_vectors_flat(const float *data, int count, uint32_t dim, const char *filepath);
 int de_build_vectors_flat_logical(const char *logical_name, const float *data, int count, uint32_t dim);
@@ -115,7 +116,8 @@ int de_load_ovec(const char *logical_name, table_t *table);
 int de_save_logical(const char *logical_name, const table_t *table);
 
 /* Builders */
-int de_build_vocab_logical(const char *logical_name, const char **words, int count);
+int de_build_vocab_logical(const char *logical_name, const char **words, int count,
+                            const float *vectors, uint32_t dim, const uint16_t *flags);
 int de_build_vectors_logical(const char *logical_name, const float **vectors, int count, uint32_t dim);
 
 /* --- High Performance Accessors --- */
@@ -132,6 +134,11 @@ int de_vocab_lookup_batch(const table_t *vocab,
 /* Vocabulary — reverse (token → word, zero-copy pointer into mmap) */
 const char *de_vocab_reverse_lookup(const table_t *vocab, uint32_t token_id,
                                      uint16_t *out_len);
+/* Extended reverse lookup: also returns per-token flags and zero-copy vector pointer.
+ * out_vec is set to NULL when the file has no embedded vectors (dim == 0). */
+const char *de_vocab_reverse_lookup_ex(const table_t *vocab, uint32_t token_id,
+                                        uint16_t *out_len, uint16_t *out_flags,
+                                        const float **out_vec);
 
 /* Bulk reverse: fills words_out[i] with mmap pointer or NULL.
  * Returns number resolved. No allocation. */
