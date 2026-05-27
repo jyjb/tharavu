@@ -39,11 +39,35 @@ static int is_integer(const char *str)
     return 1;
 }
 
+static void print_help(void)
+{
+    printf("Usage: de_import <input.csv> <output.odat>\n"
+           "\n"
+           "Import a CSV file into Tharavu's ODAT binary format.\n"
+           "\n"
+           "Arguments:\n"
+           "  <input.csv>     Path to the input CSV file (first row must be column headers)\n"
+           "  <output.odat>   Path for the output ODAT binary file (will be created/overwritten)\n"
+           "\n"
+           "Options:\n"
+           "  --help, -h      Show this help message and exit\n"
+           "\n"
+           "Notes:\n"
+           "  Columns are auto-typed: integer strings become INT32, others become STRING.\n"
+           "  Maximum 64 columns and 4096-character lines are supported.\n");
+}
+
 int main(int argc, char *argv[])
 {
+    if (argc >= 2 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0))
+    {
+        print_help();
+        return 0;
+    }
     if (argc != 3)
     {
-        printf("Usage: de_import <input.csv> <output.odat>\n");
+        fprintf(stderr, "Error: expected 2 arguments, got %d.\n\n", argc - 1);
+        print_help();
         return 1;
     }
 

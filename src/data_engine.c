@@ -1,4 +1,4 @@
-#include "../include/data_engine.h"
+#include "include/data_engine.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -21,6 +21,9 @@
 
 /* --- Global State --- */
 static char g_base_path[MAX_PATH_LEN] = "./data";
+
+/* Lock files older than this are assumed stale (crashed writer) and overridden. */
+#define LOCK_STALE_SECONDS 3600  /* 1 hour */
 
 static int ensure_dir_recursive(const char *path);
 
@@ -196,7 +199,7 @@ int de_config_load(const char *ini_path, tharavuConfig *cfg)
 {
     memset(cfg, 0, sizeof(tharavuConfig));
     strcpy(cfg->data_dir, "./data");
-    cfg->dim = 256;
+    cfg->dim = 64;
     cfg->hash_cap = 131072;
 
     FILE *fp = fopen(ini_path, "r");
@@ -204,6 +207,9 @@ int de_config_load(const char *ini_path, tharavuConfig *cfg)
     {
         if (errno == ENOENT)
         {
+            /* Auto-create INI file if missing (development-friendly, but risky
+             * in production where missing config should be an explicit error).
+             * For strict configuration loading, use de_config_load_strict(). */
             if (ensure_parent_dir_exists(ini_path) != DE_OK)
                 return DE_ERR_IO;
 
@@ -217,7 +223,7 @@ int de_config_load(const char *ini_path, tharavuConfig *cfg)
                 "data_dir = ./data\n"
                 "\n"
                 "[engine]\n"
-                "dim = 256\n"
+                "dim = 64\n"
                 "hash_cap = 131072\n"
             );
             fclose(out);
@@ -275,6 +281,64 @@ int de_config_load(const char *ini_path, tharavuConfig *cfg)
     return DE_OK;
 }
 
+int de_config_load_strict(const char *ini_path, tharavuConfig *cfg)
+{
+    memset(cfg, 0, sizeof(tharavuConfig));
+    strcpy(cfg->data_dir, "./data");
+    cfg->dim = 64;
+    cfg->hash_cap = 131072;
+
+    FILE *fp = fopen(ini_path, "r");
+    if (!fp)
+        return DE_ERR_IO; /* missing INI is a hard error in strict mode */
+
+    char line[512];
+    while (fgets(line, sizeof(line), fp))
+    {
+        if (line[0] == '#' || line[0] == '[' || line[0] == '\n')
+            continue;
+        char key[64], val[256];
+        if (sscanf(line, "%63[^=] = %255[^\n]", key, val) == 2)
+        {
+            char *kend = key + strlen(key) - 1;
+            while (kend > key && isspace((unsigned char)*kend))
+                *kend-- = '\0';
+
+            char *v = val;
+            while (*v && isspace((unsigned char)*v))
+                v++;
+            char *end = v + strlen(v) - 1;
+            while (end > v && isspace((unsigned char)*end))
+                *end-- = '\0';
+            end[1] = '\0';
+
+            if (strcmp(key, "data_dir") == 0)
+            {
+                strncpy(cfg->data_dir, v, MAX_PATH_LEN - 1);
+                cfg->data_dir[MAX_PATH_LEN - 1] = '\0';
+            }
+            else if (strcmp(key, "dim") == 0)
+            {
+                char *endptr;
+                long lv = strtol(v, &endptr, 10);
+                if (endptr != v && *endptr == '\0' && lv > 0 && lv <= 65536)
+                    cfg->dim = (int)lv;
+            }
+            else if (strcmp(key, "hash_cap") == 0)
+            {
+                char *endptr;
+                long lv = strtol(v, &endptr, 10);
+                if (endptr != v && *endptr == '\0' && lv > 0 && lv <= 67108864)
+                    cfg->hash_cap = (int)lv;
+            }
+        }
+    }
+    fclose(fp);
+
+    ensure_dir_recursive(cfg->data_dir);
+    return DE_OK;
+}
+
 /* --- Table Creation --- */
 table_t *de_create_table(const char **col_names, int col_count)
 {
@@ -305,6 +369,21 @@ table_t *de_create_table(const char **col_names, int col_count)
         {
             de_free(t);
             return NULL;
+        }
+    }
+
+    /* Validate column names for duplicates — ambiguous schema causes silent failures
+     * in tde_find() and tde_find_ids() which match the first occurrence. */
+    for (int i = 0; i < col_count; i++)
+    {
+        for (int j = i + 1; j < col_count; j++)
+        {
+            if (strcmp(t->columns[i], t->columns[j]) == 0)
+            {
+                /* Duplicate column name — reject the schema */
+                de_free(t);
+                return NULL;
+            }
         }
     }
 
@@ -476,7 +555,9 @@ int de_load(table_t *table, const char *filepath)
             goto cleanup;
         }
         uint8_t *hdr = (uint8_t *)table->mmap_ptr;
-        uint32_t count = read_u32_le(hdr + 8); // vocab_count or row_count depending on type
+        /* OVOC: vocab_count at offset 8.  OVEC: dim at offset 8, row_count at offset 16. */
+        uint32_t count = (table->file_type == 2) ? read_u32_le(hdr + 8)
+                                                  : read_u32_le(hdr + 16);
         table->row_count = count;
 
         // Setup dummy columns for API consistency
@@ -508,9 +589,13 @@ int de_save(const table_t *table, const char *filepath)
 
     /* Acquire an exclusive write lock via a sidecar .lock file.
      * Using a sidecar avoids the Windows restriction that a file
-     * cannot be renamed while it is open/locked.                  */
+     * cannot be renamed while it is open/locked.
+     * If the lock file is stale (older than LOCK_STALE_SECONDS), the previous
+     * owner crashed — delete it so we can acquire a clean lock.          */
     char lock_path[MAX_PATH_LEN];
     snprintf(lock_path, MAX_PATH_LEN, "%s.lock", filepath);
+    if (de_platform_lock_is_stale(lock_path, LOCK_STALE_SECONDS))
+        de_unlink(lock_path);
     int lock_fd = de_platform_open_for_lock(lock_path);
     if (lock_fd != -1)
         de_platform_lock(lock_fd, 1 /* exclusive */);
@@ -639,9 +724,9 @@ int de_save(const table_t *table, const char *filepath)
     fclose(fp);
     fp = NULL;
 
-// 5. Atomic Rename
+    // 5. Atomic Rename
 #ifdef _WIN32
-    if (MoveFileExA(temp_path, filepath, MOVEFILE_REPLACE_EXISTING) == 0)
+    if (!de_platform_atomic_rename(temp_path, filepath))
         goto fail;
 #else
     if (rename(temp_path, filepath) != 0)
@@ -948,6 +1033,12 @@ int de_vocab_lookup_id(const table_t *vocab, const char *word, uint32_t *out_tok
     /* Bytes to skip past the embedded vector (zero for files without vectors) */
     uint32_t vec_skip = hdr->dim * (uint32_t)sizeof(float);
 
+    /* Record header size: 4 (token_id) + 2 (key_len) + flags_bytes.
+     * reserved[0] == 8 → ABI v2 (64-bit flags); 0 or 2 → legacy 16-bit flags. */
+    uint8_t  flags_bytes = (uint8_t)hdr->reserved[0];
+    if (flags_bytes != 8) flags_bytes = 2;
+    uint32_t rec_hdr = 4u + 2u + (uint32_t)flags_bytes;
+
     // 1. Calculate Hash of the input word
     uint32_t hash = fnv1a_hash(word);
     uint32_t cap = hdr->hash_cap;
@@ -973,17 +1064,17 @@ int de_vocab_lookup_id(const table_t *vocab, const char *word, uint32_t *out_tok
             return DE_ERR_NOTFOUND;
         }
 
-        // Row Layout: [token_id (4)] [key_len (2)] [flags (2)] [vec: dim*4] [word_string...]
-        if (slot_offset + 8 + vec_skip > vocab->mmap_size)
+        /* Row layout: [token_id(4)][key_len(2)][flags(flags_bytes)][vec][word] */
+        if (slot_offset + rec_hdr + vec_skip > vocab->mmap_size)
             return DE_ERR_CORRUPT;
 
         uint8_t *row_ptr = base + slot_offset;
         uint16_t key_len = read_u16_le(row_ptr + 4);
 
-        if (slot_offset + 8 + vec_skip + key_len > vocab->mmap_size)
+        if (slot_offset + rec_hdr + vec_skip + key_len > vocab->mmap_size)
             return DE_ERR_CORRUPT;
 
-        char *row_word = (char *)(row_ptr + 8 + vec_skip);
+        char *row_word = (char *)(row_ptr + rec_hdr + vec_skip);
 
         // Quick length check first (fast fail)
         size_t word_len = strlen(word);
@@ -1032,7 +1123,7 @@ int de_vocab_lookup_batch(const table_t *vocab,
  * Returns NULL for out-of-range token_id or for pre-v1.1 files.
  */
 const char *de_vocab_reverse_lookup_ex(const table_t *vocab, uint32_t token_id,
-                                        uint16_t *out_len, uint16_t *out_flags,
+                                        uint16_t *out_len, uint64_t *out_flags,
                                         const float **out_vec)
 {
     if (!vocab || !vocab->is_mmap || vocab->file_type != 2)
@@ -1044,32 +1135,44 @@ const char *de_vocab_reverse_lookup_ex(const table_t *vocab, uint32_t token_id,
     if (token_id >= hdr->vocab_count)
         return NULL;
 
+    /* Validate OVOC version before accessing reverse index.
+     * Files with version_minor < 1 (v1.0) have no reverse_offset field.
+     * Attempting to access reverse_offset in v1.0 files causes NULL dereference. */
+    if (hdr->version_major != VERSION_MAJOR || hdr->version_minor < 1)
+        return NULL; /* pre-v1.1 file: no reverse index */
+
     uint64_t rev_off = hdr->reverse_offset;
     if (rev_off == 0)
-        return NULL; /* pre-v1.1 file: no reverse index */
+        return NULL; /* reverse index not present */
 
     /* Validate the entire reverse-index array fits in the mapping */
     if (rev_off + (uint64_t)hdr->vocab_count * sizeof(uint64_t) > vocab->mmap_size)
         return NULL;
 
+    /* Record header size: backwards-compatible with old 2-byte flag field */
+    uint8_t  flags_bytes = (uint8_t)hdr->reserved[0];
+    if (flags_bytes != 8) flags_bytes = 2;
+    uint32_t rec_hdr  = 4u + 2u + (uint32_t)flags_bytes;
     uint32_t vec_skip = hdr->dim * (uint32_t)sizeof(float);
 
     uint64_t row_off = read_u64_le(base + rev_off + (uint64_t)token_id * sizeof(uint64_t));
 
-    /* Validate record header (8 bytes: token_id[4] + key_len[2] + flags[2]) + vector */
-    if (row_off + 8 + vec_skip > vocab->mmap_size)
+    /* Validate record header + vector region fits in the mapping */
+    if (row_off + rec_hdr + vec_skip > vocab->mmap_size)
         return NULL;
 
     uint8_t  *row     = base + row_off;
     uint16_t  key_len = read_u16_le(row + 4);
 
-    if (row_off + 8 + vec_skip + key_len > vocab->mmap_size)
+    if (row_off + rec_hdr + vec_skip + key_len > vocab->mmap_size)
         return NULL;
 
     if (out_len)   *out_len   = key_len;
-    if (out_flags) *out_flags = read_u16_le(row + 6);
-    if (out_vec)   *out_vec   = (hdr->dim > 0) ? (const float *)(row + 8) : NULL;
-    return (const char *)(row + 8 + vec_skip); /* zero-copy pointer into mmap */
+    if (out_flags) *out_flags = (flags_bytes == 8)
+                                ? read_u64_le(row + 6)
+                                : (uint64_t)read_u16_le(row + 6);
+    if (out_vec)   *out_vec   = (hdr->dim > 0) ? (const float *)(row + rec_hdr) : NULL;
+    return (const char *)(row + rec_hdr + vec_skip); /* zero-copy pointer into mmap */
 }
 
 const char *de_vocab_reverse_lookup(const table_t *vocab, uint32_t token_id,
@@ -1444,7 +1547,7 @@ int de_vector_search_topk(const table_t *vectors,
  * Existing v1.1 files (hdr.dim == 0) are read correctly by the new reader.
  */
 int de_build_vocab(const char **words, int count, const char *filepath,
-                   const float *vectors, uint32_t dim, const uint16_t *flags)
+                   const float *vectors, uint32_t dim, const uint64_t *flags)
 {
     if (!words || count <= 0 || !filepath)
         return DE_ERR_INVAL;
@@ -1453,9 +1556,12 @@ int de_build_vocab(const char **words, int count, const char *filepath,
 
     /* Acquire exclusive write lock via a sidecar .lock file.
      * Using a sidecar avoids the Windows restriction that a file
-     * cannot be renamed while it is open/locked.                  */
+     * cannot be renamed while it is open/locked.
+     * Override stale lock files left by crashed processes.         */
     char lock_path[MAX_PATH_LEN];
     snprintf(lock_path, MAX_PATH_LEN, "%s.lock", filepath);
+    if (de_platform_lock_is_stale(lock_path, LOCK_STALE_SECONDS))
+        de_unlink(lock_path);
     int lock_fd = de_platform_open_for_lock(lock_path);
     if (lock_fd != -1)
         de_platform_lock(lock_fd, 1 /* exclusive */);
@@ -1473,6 +1579,7 @@ int de_build_vocab(const char **words, int count, const char *filepath,
     memcpy(hdr.magic, MAGIC_OVOC, 4);
     hdr.version_major = VERSION_MAJOR;
     hdr.version_minor = (dim > 0) ? 2 : 1;  /* v1.2: embedded vectors; v1.1: word-only */
+    hdr.reserved[0]   = 8;                   /* flags_bytes=8: 64-bit flag field (ABI v2) */
     hdr.vocab_count   = (uint32_t)count;
     hdr.dim           = dim;
     hdr.hash_cap      = cap;
@@ -1523,7 +1630,7 @@ int de_build_vocab(const char **words, int count, const char *filepath,
             if (raw_len > UINT16_MAX) goto fail; /* word too long for 16-bit key_len field */
             uint16_t    wlen  = (uint16_t)raw_len;
             uint32_t    token    = (uint32_t)i;
-            uint16_t    tok_flags = flags ? flags[i] : 0;
+            uint64_t    tok_flags = flags ? flags[i] : 0;
 
             /* Record offset for the reverse index */
             word_offsets[i] = current_data_offset;
@@ -1541,10 +1648,10 @@ int de_build_vocab(const char **words, int count, const char *filepath,
             }
             if (probes >= cap) goto fail; /* hash table full — shouldn't happen */
 
-            /* Write record: [token_id(4)][key_len(2)][flags(2)][dim floats][word(wlen)] */
+            /* Write record: [token_id(4)][key_len(2)][flags(8)][dim floats][word(wlen)] */
             if (fwrite(&token,     1, 4,    fp) != 4    ||
                 fwrite(&wlen,      1, 2,    fp) != 2    ||
-                fwrite(&tok_flags, 1, 2,    fp) != 2)
+                fwrite(&tok_flags, 1, 8,    fp) != 8)
                 goto fail;
             if (dim > 0) {
                 const float *vec = vectors + (size_t)i * dim;
@@ -1554,7 +1661,7 @@ int de_build_vocab(const char **words, int count, const char *filepath,
             if (fwrite(word, 1, wlen, fp) != wlen)
                 goto fail;
 
-            current_data_offset += 4u + 2u + 2u + (uint64_t)dim * sizeof(float) + wlen;
+            current_data_offset += 4u + 2u + 8u + (uint64_t)dim * sizeof(float) + wlen;
         }
 
         /* --- Reverse index: uint64_t[count] ordered by token_id --- */
@@ -1583,7 +1690,7 @@ int de_build_vocab(const char **words, int count, const char *filepath,
     fp = NULL;
 
 #ifdef _WIN32
-    if (MoveFileExA(temp_path, filepath, MOVEFILE_REPLACE_EXISTING) == 0)
+    if (!de_platform_atomic_rename(temp_path, filepath))
     { de_unlink(temp_path); if (lock_fd != -1) { de_platform_unlock(lock_fd); de_platform_close_fd(lock_fd); } return DE_ERR_IO; }
 #else
     if (rename(temp_path, filepath) != 0)
@@ -1642,7 +1749,7 @@ static int build_vectors_impl(FILE *fp, const char *temp_path, const char *filep
     fp = NULL;
 
 #ifdef _WIN32
-    if (MoveFileExA(temp_path, filepath, MOVEFILE_REPLACE_EXISTING) == 0)
+    if (!de_platform_atomic_rename(temp_path, filepath))
     { de_unlink(temp_path); return DE_ERR_IO; }
 #else
     if (rename(temp_path, filepath) != 0)
@@ -1662,9 +1769,12 @@ int de_build_vectors(const float **vectors, int count, uint32_t dim, const char 
     if (!vectors || count <= 0 || dim == 0 || !filepath)
         return DE_ERR_INVAL;
 
-    /* Acquire exclusive write lock via a sidecar .lock file. */
+    /* Acquire exclusive write lock via a sidecar .lock file.
+     * Override stale lock files left by crashed processes.         */
     char lock_path[MAX_PATH_LEN];
     snprintf(lock_path, MAX_PATH_LEN, "%s.lock", filepath);
+    if (de_platform_lock_is_stale(lock_path, LOCK_STALE_SECONDS))
+        de_unlink(lock_path);
     int lock_fd = de_platform_open_for_lock(lock_path);
     if (lock_fd != -1)
         de_platform_lock(lock_fd, 1 /* exclusive */);
@@ -1690,9 +1800,12 @@ int de_build_vectors_flat(const float *data, int count, uint32_t dim, const char
     if (!data || count <= 0 || dim == 0 || !filepath)
         return DE_ERR_INVAL;
 
-    /* Acquire exclusive write lock via a sidecar .lock file. */
+    /* Acquire exclusive write lock via a sidecar .lock file.
+     * Override stale lock files left by crashed processes.         */
     char lock_path[MAX_PATH_LEN];
     snprintf(lock_path, MAX_PATH_LEN, "%s.lock", filepath);
+    if (de_platform_lock_is_stale(lock_path, LOCK_STALE_SECONDS))
+        de_unlink(lock_path);
     int lock_fd = de_platform_open_for_lock(lock_path);
     if (lock_fd != -1)
         de_platform_lock(lock_fd, 1 /* exclusive */);
@@ -1750,7 +1863,7 @@ int de_save_logical(const char *logical_name, const table_t *table) {
 
 /* Builder Wrappers */
 int de_build_vocab_logical(const char *logical_name, const char **words, int count,
-                            const float *vectors, uint32_t dim, const uint16_t *flags) {
+                            const float *vectors, uint32_t dim, const uint64_t *flags) {
     char path[MAX_PATH_LEN];
     if (de_resolve_path(logical_name, 2, path, sizeof(path)) != DE_OK) return DE_ERR_INVAL;
     return de_build_vocab(words, count, path, vectors, dim, flags);

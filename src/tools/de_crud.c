@@ -5,17 +5,35 @@
 #include <ctype.h>  
 #include "../include/data_engine.h"
 
-void print_usage() {
-    printf("Usage:\n");
-    printf("  de_crud <file.odat> list\n");
-    printf("  de_crud <file.odat> read <row_idx>\n");
-    printf("  de_crud <file.odat> insert <col1=val1,col2=val2,...>\n");
-    printf("  de_crud <file.odat> update <row_idx> <col_idx> <new_value>\n");
-    printf("  de_crud <file.odat> delete <row_idx>\n");
-    printf("  de_crud <file.odat> export <csv_file>\n");
+void print_usage(void)
+{
+    printf("Usage:\n"
+           "  de_crud <file.odat> list\n"
+           "  de_crud <file.odat> read   <row_idx>\n"
+           "  de_crud <file.odat> insert <col1=val1,col2=val2,...>\n"
+           "  de_crud <file.odat> update <row_idx> <col_idx> <new_value>\n"
+           "  de_crud <file.odat> delete <row_idx>\n"
+           "  de_crud <file.odat> export <csv_file>\n"
+           "\n"
+           "Options:\n"
+           "  --help, -h   Show this help message and exit\n"
+           "\n"
+           "Actions:\n"
+           "  list         Print all rows and columns\n"
+           "  read         Print a single row by index\n"
+           "  insert       Append a new row; values are comma-separated col=val pairs\n"
+           "               Integer values are stored as INT32, others as STRING\n"
+           "  update       Replace a single cell value (writes to disk immediately)\n"
+           "  delete       Remove a row by index (writes to disk immediately)\n"
+           "  export       Write all rows to a CSV file\n");
 }
 
 int main(int argc, char *argv[]) {
+    if (argc >= 2 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0))
+    {
+        print_usage();
+        return 0;
+    }
     if (argc < 3) { print_usage(); return 1; }
 
     const char *filepath = argv[1];

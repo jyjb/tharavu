@@ -14,7 +14,7 @@ set(ENGINE_SOURCES
 # ── Static library (used by the CLI tools) ────────────────────────────────────
 
 add_library(tharavu_static STATIC ${ENGINE_SOURCES})
-target_include_directories(tharavu_static PUBLIC include)
+target_include_directories(tharavu_static PUBLIC src/include)
 set_target_properties(tharavu_static PROPERTIES OUTPUT_NAME tharavu)
 
 # ── Shared library / DLL ─────────────────────────────────────────────────────
@@ -27,64 +27,74 @@ set_target_properties(tharavu_static PROPERTIES OUTPUT_NAME tharavu)
 # The internal data_engine.h is never installed.
 
 add_library(tharavu SHARED ${ENGINE_SOURCES} src/tharavu_dll.c)
-target_include_directories(tharavu PUBLIC include)
+target_include_directories(tharavu PUBLIC src/include)
 target_compile_definitions(tharavu PRIVATE THARAVU_EXPORTS)
 
-# Restrict exported symbols to those marked THARAVU_API on non-Windows.
-# On Windows, __declspec(dllexport/import) handles this automatically.
 if(NOT WIN32)
     target_compile_options(tharavu PRIVATE -fvisibility=hidden)
 endif()
 
-# On Windows with MSVC generate a .lib import library automatically.
-# MinGW produces libtharavu.dll.a via --out-implib (handled by CMake).
 set_target_properties(tharavu PROPERTIES
     OUTPUT_NAME   tharavu
-    WINDOWS_EXPORT_ALL_SYMBOLS OFF   # we use explicit __declspec
+    WINDOWS_EXPORT_ALL_SYMBOLS OFF
 )
 
 # ── CLI Tools ────────────────────────────────────────────────────────────────
 
 foreach(TOOL de_dump de_import de_crud)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/tools/${TOOL}.c")
-        add_executable(${TOOL} tools/${TOOL}.c)
-        target_include_directories(${TOOL} PRIVATE include)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/src/tools/${TOOL}.c")
+        add_executable(${TOOL} src/tools/${TOOL}.c)
+        target_include_directories(${TOOL} PRIVATE src/include)
         target_link_libraries(${TOOL} PRIVATE tharavu_static)
     endif()
 endforeach()
 
-# ── Tests ────────────────────────────────────────────────────────────────────
+# ── Tests (auto-discovered via CTest) ────────────────────────────────────────
 
-foreach(TEST test_engine test_logical)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/tests/${TEST}.c")
-        add_executable(${TEST} tests/${TEST}.c)
-        target_include_directories(${TEST} PRIVATE include)
-        target_link_libraries(${TEST} PRIVATE tharavu_static)
-    elseif(EXISTS "${CMAKE_SOURCE_DIR}/tools/${TEST}.c")
-        add_executable(${TEST} tools/${TEST}.c)
-        target_include_directories(${TEST} PRIVATE include)
-        target_link_libraries(${TEST} PRIVATE tharavu_static)
+enable_testing()
+
+file(GLOB TEST_SOURCES "test/*.c")
+
+foreach(TEST_FILE ${TEST_SOURCES})
+    get_filename_component(TEST_NAME ${TEST_FILE} NAME_WE)
+
+    # Windows-specific tests (filename contains "win32") are skipped on non-Windows hosts
+    if(TEST_NAME MATCHES "win32" AND NOT WIN32)
+        message(STATUS "  Skipping ${TEST_NAME} (Windows-only, non-Windows host)")
+        continue()
     endif()
+
+    add_executable(${TEST_NAME} ${TEST_FILE})
+    target_include_directories(${TEST_NAME} PRIVATE src/include)
+    target_link_libraries(${TEST_NAME} PRIVATE tharavu_static)
+    add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
 endforeach()
+
+# ── Sample / Examples ─────────────────────────────────────────────────────────
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/docs/sample/create_sample_db.c")
+    add_executable(create_sample_db docs/sample/create_sample_db.c)
+    target_include_directories(create_sample_db PRIVATE src/include)
+    target_link_libraries(create_sample_db PRIVATE tharavu_static)
+endif()
 
 # ── Install rules ─────────────────────────────────────────────────────────────
 #   cmake --install . --prefix /usr/local
 
 install(TARGETS tharavu
-    RUNTIME DESTINATION bin          # .dll on Windows
-    LIBRARY DESTINATION lib          # .so / .dylib on POSIX
-    ARCHIVE DESTINATION lib          # .lib import lib on Windows
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
 )
 
-# Expose only the public header — not the internal engine headers
-install(FILES include/tharavu_dll.h DESTINATION include)
+install(FILES src/include/tharavu_dll.h DESTINATION include)
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 message(STATUS "Tharavu DataEngine ${PROJECT_VERSION}")
 message(STATUS "  DLL/SO target : tharavu")
 message(STATUS "  Static target : tharavu_static")
-message(STATUS "  Public header : include/tharavu_dll.h")
+message(STATUS "  Public header : src/include/tharavu_dll.h")
 message(STATUS "")
-message(STATUS "  Build DLL only:  cmake --build . --target tharavu")
-message(STATUS "  Install:         cmake --install . --prefix <dir>")
+message(STATUS "  Build:           cmake -B build && cmake --build build")
+message(STATUS "  Install:         cmake --install build --prefix <dir>")

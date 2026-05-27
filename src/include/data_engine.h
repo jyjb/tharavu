@@ -65,6 +65,10 @@ int de_get_row_raw(const char *filepath, uint32_t row_id, void *buffer, size_t b
 
 /* Utils */
 int de_config_load(const char *ini_path, tharavuConfig *cfg);
+/* Like de_config_load() but returns DE_ERR_IO immediately if the INI file is
+ * absent instead of auto-creating it.  Use in production deployments where a
+ * missing config should be an explicit operator error, not silently defaulted. */
+int de_config_load_strict(const char *ini_path, tharavuConfig *cfg);
 void de_stats(const table_t *table);
 const char *de_strerror(int code);
 
@@ -77,7 +81,7 @@ int de_update_cell(table_t *table, int row, int col, const cell_t *new_value);
 int de_delete_row(table_t *table, int row_index);
 
 int de_build_vocab(const char **words, int count, const char *filepath,
-                   const float *vectors, uint32_t dim, const uint16_t *flags);
+                   const float *vectors, uint32_t dim, const uint64_t *flags);
 int de_build_vectors(const float **vectors, int count, uint32_t dim, const char *filepath);
 int de_build_vectors_flat(const float *data, int count, uint32_t dim, const char *filepath);
 int de_build_vectors_flat_logical(const char *logical_name, const float *data, int count, uint32_t dim);
@@ -100,8 +104,21 @@ int de_safe_read(void *base, size_t base_size, uint64_t offset, void *dst, size_
 int de_platform_open_for_lock(const char *path);
 void de_platform_close_fd(int fd);
 
+/* Returns 1 if the lock file at path is older than max_age_seconds (stale),
+ * 0 if it is fresh or does not exist.  Used to override locks left by crashed
+ * processes.  Does not acquire or release any lock itself. */
+int de_platform_lock_is_stale(const char *lock_path, int max_age_seconds);
+
 /* Converts "dbname.tablename" to full path with extension based on type */
 int de_resolve_path(const char *logical_name, int file_type, char *out_path, size_t max_len);
+
+/* Windows-specific atomic rename with exponential backoff for mmap conflicts.
+ * Retries MoveFileExA up to WIN32_RENAME_MAX_RETRIES times with exponential
+ * delay to handle ERROR_SHARING_VIOLATION and ERROR_ACCESS_DENIED.
+ * Returns 1 on success, 0 on failure (called only on _WIN32). */
+#ifdef _WIN32
+int de_platform_atomic_rename(const char *temp_path, const char *dest_path);
+#endif
 
 /* --- Configuration --- */
 void de_set_base_path(const char *path);
@@ -117,7 +134,7 @@ int de_save_logical(const char *logical_name, const table_t *table);
 
 /* Builders */
 int de_build_vocab_logical(const char *logical_name, const char **words, int count,
-                            const float *vectors, uint32_t dim, const uint16_t *flags);
+                            const float *vectors, uint32_t dim, const uint64_t *flags);
 int de_build_vectors_logical(const char *logical_name, const float **vectors, int count, uint32_t dim);
 
 /* --- High Performance Accessors --- */
@@ -135,9 +152,10 @@ int de_vocab_lookup_batch(const table_t *vocab,
 const char *de_vocab_reverse_lookup(const table_t *vocab, uint32_t token_id,
                                      uint16_t *out_len);
 /* Extended reverse lookup: also returns per-token flags and zero-copy vector pointer.
+ * out_flags receives the full 64-bit domain+intent bitmask (8 bytes in ABI v2 files).
  * out_vec is set to NULL when the file has no embedded vectors (dim == 0). */
 const char *de_vocab_reverse_lookup_ex(const table_t *vocab, uint32_t token_id,
-                                        uint16_t *out_len, uint16_t *out_flags,
+                                        uint16_t *out_len, uint64_t *out_flags,
                                         const float **out_vec);
 
 /* Bulk reverse: fills words_out[i] with mmap pointer or NULL.

@@ -14,12 +14,32 @@ static uint64_t u64(const uint8_t *p)
     return v;
 }
 
+static void print_help(void)
+{
+    printf("Usage: de_dump <file>\n"
+           "\n"
+           "Dump the header of a Tharavu binary file (.odat, .ovoc, .ovec).\n"
+           "\n"
+           "Arguments:\n"
+           "  <file>        Path to the binary data file\n"
+           "\n"
+           "Options:\n"
+           "  --help, -h    Show this help message and exit\n"
+           "\n"
+           "Output fields:\n"
+           "  ODAT  FORMAT, Rows, Cols, Stride\n"
+           "  OVOC  FORMAT, Vocab count, Dim, HashCap\n"
+           "  OVEC  FORMAT, Rows, Dim\n");
+}
+
 int main(int argc, char **argv)
 {
-    if (argc < 2)
+    if (argc < 2 || strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)
     {
-        fprintf(stderr, "Usage: de_dump <file>\n");
-        return 1;
+        if (argc < 2)
+            fprintf(stderr, "Error: no file specified.\n\n");
+        print_help();
+        return (argc < 2) ? 1 : 0;
     }
 
     FILE *f = fopen(argv[1], "rb");

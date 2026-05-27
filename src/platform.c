@@ -1,4 +1,4 @@
-#include "../include/data_engine.h"
+#include "include/data_engine.h"
 #include <string.h>
 #include <errno.h>
 
@@ -16,6 +16,11 @@
 #include <unistd.h>
 #include <sys/file.h>
 #endif
+
+/* ── Windows atomic rename helper ── */
+/* Retry count and delay for handling mmap conflicts on Windows */
+#define WIN32_RENAME_MAX_RETRIES 5
+#define WIN32_RENAME_DELAY_MS    50
 
 /* --- Endianness Helpers (Little Endian Standard) --- */
 uint16_t read_u16_le(const uint8_t *p) {
@@ -168,3 +173,71 @@ void de_platform_close_fd(int fd) {
     close(fd);
 #endif
 }
+
+/* Returns 1 if the lock file is older than max_age_seconds, else 0.
+ * A lock file with mtime older than the threshold is assumed to belong to a
+ * crashed process and can be safely overridden by the caller. */
+int de_platform_lock_is_stale(const char *lock_path, int max_age_seconds) {
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (!GetFileAttributesExA(lock_path, GetFileExInfoStandard, &info))
+        return 0; /* file doesn't exist — not stale */
+    FILETIME ft = info.ftLastWriteTime;
+    ULARGE_INTEGER mtime_100ns;
+    mtime_100ns.LowPart  = ft.dwLowDateTime;
+    mtime_100ns.HighPart = ft.dwHighDateTime;
+    /* FILETIME epoch: 1601-01-01. Convert to Unix epoch (1970-01-01).
+     * Difference is 116444736000000000 * 100-ns ticks. */
+    uint64_t mtime_s = (mtime_100ns.QuadPart - 116444736000000000ULL) / 10000000ULL;
+    SYSTEMTIME st;
+    GetSystemTime(&st);
+    FILETIME now_ft;
+    SystemTimeToFileTime(&st, &now_ft);
+    ULARGE_INTEGER now_100ns;
+    now_100ns.LowPart  = now_ft.dwLowDateTime;
+    now_100ns.HighPart = now_ft.dwHighDateTime;
+    uint64_t now_s = (now_100ns.QuadPart - 116444736000000000ULL) / 10000000ULL;
+    return (now_s > mtime_s) && ((now_s - mtime_s) > (uint64_t)max_age_seconds);
+#else
+    struct stat sb;
+    if (stat(lock_path, &sb) != 0)
+        return 0; /* file doesn't exist — not stale */
+    time_t now = time(NULL);
+    return (now > sb.st_mtime) && ((now - sb.st_mtime) > (time_t)max_age_seconds);
+#endif
+}
+
+#ifdef _WIN32
+/* Windows-specific atomic rename with retry logic for mmap conflicts.
+ * When another process has the destination file memory-mapped,
+ * MoveFileExA may fail. This function retries with exponential backoff
+ * to allow other processes time to release their mappings.
+ * Returns 1 on success, 0 on failure with detailed error diagnostics. */
+int de_platform_atomic_rename(const char *temp_path, const char *dest_path) {
+    int retry_count = 0;
+    DWORD delay_ms = WIN32_RENAME_DELAY_MS;
+    
+    while (retry_count < WIN32_RENAME_MAX_RETRIES) {
+        if (MoveFileExA(temp_path, dest_path, MOVEFILE_REPLACE_EXISTING)) {
+            return 1; /* success */
+        }
+        
+        DWORD err = GetLastError();
+        
+        /* ERROR_SHARING_VIOLATION (32) = another process has file open/mmap'd.
+         * ERROR_ACCESS_DENIED (5) = may indicate permission or mmap lock.
+         * Retry on these errors; others are fatal. */
+        if (err != ERROR_SHARING_VIOLATION && err != ERROR_ACCESS_DENIED) {
+            return 0; /* fatal error — do not retry */
+        }
+        
+        retry_count++;
+        if (retry_count < WIN32_RENAME_MAX_RETRIES) {
+            Sleep(delay_ms);
+            delay_ms *= 2; /* exponential backoff: 50ms → 100ms → 200ms → 400ms → 800ms */
+        }
+    }
+    
+    return 0; /* failed after max retries */
+}
+#endif

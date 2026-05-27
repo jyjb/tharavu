@@ -87,8 +87,21 @@ typedef void *tde_handle_t;
 
 /* ── Version ─────────────────────────────────────────────────────────────── */
 
+/* Compile-time ABI version — increment whenever a function signature changes,
+ * a symbol is removed, or a struct layout visible to consumers changes.
+ * Consumers can guard against mismatches:
+ *   #if THARAVU_ABI_VERSION != 1
+ *   #  error "tharavu.dll ABI mismatch — update the header"
+ *   #endif
+ * and verify at startup:  assert(tde_abi_version() == THARAVU_ABI_VERSION); */
+#define THARAVU_ABI_VERSION 2
+
 THARAVU_API int THARAVU_CALL tde_version_major(void);
 THARAVU_API int THARAVU_CALL tde_version_minor(void);
+
+/* Returns THARAVU_ABI_VERSION as compiled into the DLL.
+ * Compare against the header constant to detect consumer/DLL mismatches. */
+THARAVU_API int THARAVU_CALL tde_abi_version(void);
 
 /* ── Global configuration ────────────────────────────────────────────────── */
 
@@ -98,7 +111,10 @@ THARAVU_API void THARAVU_CALL tde_set_base_path(const char *path);
 
 /* Load engine settings from an INI file (data_dir, dim, hash_cap keys).
  * Also calls tde_set_base_path() with the loaded data_dir value.
- * Creates the INI file and data directory if they do not exist.
+ * Creates the INI file and data directory if they do not exist (dev-friendly).
+ * WARNING: This auto-creation is risky in production. In production environments
+ * where missing config should be an explicit error, manually validate that the
+ * INI exists and return an error if not — or pass --strict to your CLI tools.
  * Returns TDE_OK on success.                                                */
 THARAVU_API int  THARAVU_CALL tde_config_load(const char *ini_path);
 
@@ -185,7 +201,9 @@ THARAVU_API int THARAVU_CALL tde_delete_row    (tde_handle_t h, int row);
 
 /* Returns a new independent table containing all rows where
  * column == value (string comparison; integers are matched by value).
- * The result is owned by the caller — call tde_close() when done.
+ * The result is owned by the caller — ALWAYS call tde_close() when done,
+ * even if the result is empty or contains few rows. Forgetting to close
+ * leaks file handles, especially problematic for .ovec and .ovoc mmap'd files.
  * Returns NULL if no rows match or on error; check tde_last_error().       */
 THARAVU_API tde_handle_t THARAVU_CALL tde_find(tde_handle_t h,
                                                 const char *column,
@@ -230,11 +248,12 @@ THARAVU_API const char *THARAVU_CALL tde_vocab_reverse_lookup(tde_handle_t h,
 
 /* Extended reverse lookup: also returns per-token flags and a zero-copy
  * pointer to the embedded float vector (NULL when dim == 0).
- * out_len, out_flags, out_vec are all optional (may be NULL).              */
+ * out_len, out_flags, out_vec are all optional (may be NULL).
+ * out_flags receives the full 64-bit domain+intent bitmask.                */
 THARAVU_API const char *THARAVU_CALL tde_vocab_reverse_lookup_ex(tde_handle_t   h,
                                                                    uint32_t       token_id,
                                                                    uint16_t      *out_len,
-                                                                   uint16_t      *out_flags,
+                                                                   uint64_t      *out_flags,
                                                                    const float  **out_vec);
 
 /* Bulk token → word (zero-copy).  words_out[i] = mmap pointer or NULL.
@@ -297,21 +316,22 @@ THARAVU_API int THARAVU_CALL tde_vector_search_topk(tde_handle_t  h,
  * words[0..count-1] are null-terminated strings; token IDs == array index.
  * vectors: flat row-major float[count * dim] embedding per token, or NULL.
  * dim: embedding dimension; 0 means no embedded vectors.
- * flags: per-token uint16 flags array, or NULL (all tokens get flags=0).
+ * flags: per-token uint64 domain+intent bitmask array, or NULL (all flags=0).
+ *        Written as an 8-byte field per record (ABI v2).
  * Returns TDE_OK or a negative error code.                                 */
 THARAVU_API int THARAVU_CALL tde_build_vocab(const char     *filepath,
                                               const char    **words,
                                               int             count,
                                               const float    *vectors,
                                               uint32_t        dim,
-                                              const uint16_t *flags);
+                                              const uint64_t *flags);
 
 THARAVU_API int THARAVU_CALL tde_build_vocab_logical(const char     *logical_name,
                                                       const char    **words,
                                                       int             count,
                                                       const float    *vectors,
                                                       uint32_t        dim,
-                                                      const uint16_t *flags);
+                                                      const uint64_t *flags);
 
 /* Build a vector file (.ovec) from a FLAT row-major float array.
  * data points to count * dim floats laid out as:

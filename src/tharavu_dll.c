@@ -6,16 +6,16 @@
  *
  * Build:
  *   Windows (MinGW):  gcc -std=c99 -O2 -DTHARAVU_EXPORTS -shared \
- *                         -I./include src/data_engine.c src/platform.c \
- *                         src/tharavu_dll.c -o tharavu.dll \
- *                         -Wl,--out-implib,libtharavu_dll.a
+ *                         -I./src/include src/data_engine.c src/platform.c \
+ *                         src/tharavu_dll.c -o build/tharavu.dll \
+ *                         -Wl,--out-implib,build/libtharavu_dll.a
  *   Linux/macOS:      gcc -std=c99 -O2 -DTHARAVU_EXPORTS -fPIC -shared \
- *                         -I./include src/data_engine.c src/platform.c \
- *                         src/tharavu_dll.c -o libtharavu.so
+ *                         -I./src/include src/data_engine.c src/platform.c \
+ *                         src/tharavu_dll.c -o build/libtharavu.so
  */
 
-#include "../include/tharavu_dll.h"   /* public API — defines THARAVU_EXPORTS */
-#include "../include/data_engine.h"   /* internal engine API                  */
+#include "include/tharavu_dll.h"   /* public API — defines THARAVU_EXPORTS */
+#include "include/data_engine.h"   /* internal engine API                  */
 #include <stdlib.h>
 #include <string.h>
 
@@ -76,6 +76,7 @@ static row_handle_t *to_row(tde_handle_t h)
 
 THARAVU_API int THARAVU_CALL tde_version_major(void) { return VERSION_MAJOR; }
 THARAVU_API int THARAVU_CALL tde_version_minor(void) { return VERSION_MINOR; }
+THARAVU_API int THARAVU_CALL tde_abi_version(void)   { return THARAVU_ABI_VERSION; }
 
 /* ── Global configuration ────────────────────────────────────────────────── */
 
@@ -516,7 +517,7 @@ THARAVU_API const char *THARAVU_CALL tde_vocab_reverse_lookup(tde_handle_t h,
 THARAVU_API const char *THARAVU_CALL tde_vocab_reverse_lookup_ex(tde_handle_t  h,
                                                                    uint32_t      token_id,
                                                                    uint16_t     *out_len,
-                                                                   uint16_t     *out_flags,
+                                                                   uint64_t     *out_flags,
                                                                    const float **out_vec)
 {
     g_last_err = TDE_OK;
@@ -613,7 +614,7 @@ THARAVU_API int THARAVU_CALL tde_build_vocab(const char     *filepath,
                                               int             count,
                                               const float    *vectors,
                                               uint32_t        dim,
-                                              const uint16_t *flags)
+                                              const uint64_t *flags)
 {
     g_last_err = TDE_OK;
     if (!filepath || !words || count <= 0) return set_err(TDE_ERR_INVAL);
@@ -626,7 +627,7 @@ THARAVU_API int THARAVU_CALL tde_build_vocab_logical(const char     *logical_nam
                                                       int             count,
                                                       const float    *vectors,
                                                       uint32_t        dim,
-                                                      const uint16_t *flags)
+                                                      const uint64_t *flags)
 {
     g_last_err = TDE_OK;
     if (!logical_name || !words || count <= 0) return set_err(TDE_ERR_INVAL);
