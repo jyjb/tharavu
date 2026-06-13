@@ -27,7 +27,7 @@ else
 endif
 
 SRCS     = src/data_engine.c src/platform.c
-SRCS_DLL = $(SRCS) src/tharavu_dll.c
+SRCS_DLL = $(SRCS) src/ogph.c src/ogph_builder.c src/tharavu_dll.c
 OBJS     = $(patsubst src/%.c,build/obj/%.o,$(SRCS))
 
 LIB    = build/libtharavu.a

@@ -1,0 +1,26 @@
+=====================================
+DATE: 2026-05-28
+DIRECTIVE: THARAVU .OGPH Graph Storage
+STATUS: COMPLETE
+REPO: Z:\._repos\Tharavu
+FILES CHANGED:
+  src/include/tharavu_dll.h  UPDATED — TDE_FILE_OGPH=4 + all OGPH_FLAG_/NODE_/EDGE_ constants + #include ogph.h/ogph_builder.h
+  src/include/ogph.h         NEW — internal OGPH reader API (tgph_open/save/close/query)
+  src/include/ogph_builder.h NEW — internal OGPH builder API (tgph_builder_*)
+  src/ogph.c                 NEW — mmap reader, FNV-1a hash index, CSR traversal
+  src/ogph_builder.c         NEW — arena builder, CSR construction, atomic write
+  src/data_engine.c          UPDATED — de_resolve_path extended for file_type=4 (.ogph)
+  CMakeLists.txt             UPDATED — ogph.c + ogph_builder.c in ENGINE_SOURCES (both targets); THARAVU_EXPORTS on static target
+VERSION: 1.0 → 1.1 (ABI v2 unchanged)
+NEW CAPABILITY: .OGPH CSR graph file type
+  tgph_open / tgph_save / tgph_close
+  tgph_find_node O(1) FNV-1a hash
+  tgph_next_edge CSR O(degree)
+  tgph_out_degree
+  tgph_builder_create/add_node/add_edge/finalise/free
+  logical name resolution: dbname.graphname → base/dbname/graphname.ogph
+  17 node types (OBJECT→CONCEPT), 12 edge types (IS_A→RECOVERS_VIA)
+  OGPH_FLAG_DIRECTED/WEIGHTED/TYPED/EMBEDDED header flags
+DLL COPIED TO:
+  Z:\._repos\Thiraviyan\bin\Debug\net10.0-windows\tharavu.dll
+=====================================

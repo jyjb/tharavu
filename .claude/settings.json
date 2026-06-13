@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake -B build -G \"MinGW Makefiles\")",
+      "Bash(objdump -p Z:/._repos/THARAVU/build/libtharavu.dll)"
+    ]
+  }
+}

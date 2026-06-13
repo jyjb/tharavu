@@ -64,11 +64,7 @@ int de_find_by_id(const table_t *table, uint32_t id, cell_t *out_vector);
 int de_get_row_raw(const char *filepath, uint32_t row_id, void *buffer, size_t buf_size, uint32_t *out_bytes);
 
 /* Utils */
-int de_config_load(const char *ini_path, tharavuConfig *cfg);
-/* Like de_config_load() but returns DE_ERR_IO immediately if the INI file is
- * absent instead of auto-creating it.  Use in production deployments where a
- * missing config should be an explicit operator error, not silently defaulted. */
-int de_config_load_strict(const char *ini_path, tharavuConfig *cfg);
+/* de_config_load / de_config_load_strict REMOVED 2026-05-29 — use tde_set_base_path(). */
 void de_stats(const table_t *table);
 const char *de_strerror(int code);
 

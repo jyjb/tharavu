@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(tharavu VERSION 1.0 LANGUAGES C)
+project(tharavu VERSION 1.2 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -9,12 +9,15 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(ENGINE_SOURCES
     src/data_engine.c
     src/platform.c
+    src/ogph.c
+    src/ogph_builder.c
 )
 
 # ── Static library (used by the CLI tools) ────────────────────────────────────
 
 add_library(tharavu_static STATIC ${ENGINE_SOURCES})
 target_include_directories(tharavu_static PUBLIC src/include)
+target_compile_definitions(tharavu_static PRIVATE THARAVU_EXPORTS)
 set_target_properties(tharavu_static PROPERTIES OUTPUT_NAME tharavu)
 
 # ── Shared library / DLL ─────────────────────────────────────────────────────
@@ -25,6 +28,7 @@ set_target_properties(tharavu_static PROPERTIES OUTPUT_NAME tharavu)
 #
 # Consumers link against this target and include tharavu_dll.h ONLY.
 # The internal data_engine.h is never installed.
+# THARAVU has zero external dependencies (sLispManager removed 2026-05-29).
 
 add_library(tharavu SHARED ${ENGINE_SOURCES} src/tharavu_dll.c)
 target_include_directories(tharavu PUBLIC src/include)
@@ -39,11 +43,18 @@ set_target_properties(tharavu PROPERTIES
     WINDOWS_EXPORT_ALL_SYMBOLS OFF
 )
 
+if(WIN32)
+    set_target_properties(tharavu PROPERTIES
+        LINK_FLAGS "${CMAKE_SOURCE_DIR}/src/tharavu.def"
+    )
+endif()
+
 # ── CLI Tools ────────────────────────────────────────────────────────────────
 
 foreach(TOOL de_dump de_import de_crud)
     if(EXISTS "${CMAKE_SOURCE_DIR}/src/tools/${TOOL}.c")
         add_executable(${TOOL} src/tools/${TOOL}.c)
+        set_target_properties(${TOOL} PROPERTIES OUTPUT_NAME ${TOOL}_CLI)
         target_include_directories(${TOOL} PRIVATE src/include)
         target_link_libraries(${TOOL} PRIVATE tharavu_static)
     endif()
@@ -65,6 +76,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
 
     add_executable(${TEST_NAME} ${TEST_FILE})
+    set_target_properties(${TEST_NAME} PROPERTIES OUTPUT_NAME ${TEST_NAME}_CLI)
     target_include_directories(${TEST_NAME} PRIVATE src/include)
     target_link_libraries(${TEST_NAME} PRIVATE tharavu_static)
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
@@ -74,6 +86,7 @@ endforeach()
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/docs/sample/create_sample_db.c")
     add_executable(create_sample_db docs/sample/create_sample_db.c)
+    set_target_properties(create_sample_db PROPERTIES OUTPUT_NAME create_sample_db_CLI)
     target_include_directories(create_sample_db PRIVATE src/include)
     target_link_libraries(create_sample_db PRIVATE tharavu_static)
 endif()
@@ -91,7 +104,7 @@ install(FILES src/include/tharavu_dll.h DESTINATION include)
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
-message(STATUS "Tharavu DataEngine ${PROJECT_VERSION}")
+message(STATUS "Tharavu DataEngine ${PROJECT_VERSION} (zero external dependencies)")
 message(STATUS "  DLL/SO target : tharavu")
 message(STATUS "  Static target : tharavu_static")
 message(STATUS "  Public header : src/include/tharavu_dll.h")

@@ -9,7 +9,7 @@
 #define MAGIC_OVOC "OVOC"
 #define MAGIC_OVEC "OVEC"
 #define VERSION_MAJOR 1
-#define VERSION_MINOR 0
+#define VERSION_MINOR 2
 
 /* Cell Types */
 #define DE_TYPE_NULL    0

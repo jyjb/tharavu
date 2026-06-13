@@ -20,7 +20,7 @@
 #endif
 
 /* --- Global State --- */
-static char g_base_path[MAX_PATH_LEN] = "./data";
+static char g_base_path[MAX_PATH_LEN] = "./knowledge";
 
 /* Lock files older than this are assumed stale (crashed writer) and overridden. */
 #define LOCK_STALE_SECONDS 3600  /* 1 hour */
@@ -94,51 +94,72 @@ static int ensure_dir_recursive(const char *path)
     return DE_OK;
 }
 
-/* Resolve "db.table" -> "./data/db/table.ext" */
+/* Resolve logical name to filesystem path.
+ *   "db.table"              -> base/db/table.ext
+ *   "dataset.database.table"-> base/dataset/database/table.ext */
 int de_resolve_path(const char *logical_name, int file_type, char *out_path, size_t max_len)
 {
-    const char *dot = strchr(logical_name, '.');
-    if (!dot)
-        return DE_ERR_INVAL; // Must be "db.table"
-
-    int db_len = dot - logical_name;
-    /* Limit db_name to 63 chars so base_path + "/" + db_name fits in MAX_PATH_LEN */
-    if (db_len <= 0 || db_len >= 64)
+    const char *dot1 = strchr(logical_name, '.');
+    if (!dot1)
         return DE_ERR_INVAL;
 
-    char db_name[64];
-    strncpy(db_name, logical_name, db_len);
-    db_name[db_len] = '\0';
+    const char *dot2 = strchr(dot1 + 1, '.');
 
-    const char *table_name = dot + 1;
-    size_t tname_len = strlen(table_name);
-    if (tname_len == 0 || tname_len > 255)
-        return DE_ERR_INVAL;
+    const char *ext;
+    if      (file_type == 1) ext = ".odat";
+    else if (file_type == 2) ext = ".ovoc";
+    else if (file_type == 3) ext = ".ovec";
+    else if (file_type == 4) ext = ".ogph";
+    else                     return DE_ERR_INVAL;
 
-    // Determine extension
-    const char *ext = "";
-    if (file_type == 1)
-        ext = ".odat";
-    else if (file_type == 2)
-        ext = ".ovoc";
-    else if (file_type == 3)
-        ext = ".ovec";
+    int     written;
+    char    dir_path[MAX_PATH_LEN];
+    int     dw;
+
+    if (!dot2)
+    {
+        /* Two-level: "db.table" */
+        int db_len = (int)(dot1 - logical_name);
+        if (db_len <= 0 || db_len >= 64) return DE_ERR_INVAL;
+
+        char db_name[64];
+        strncpy(db_name, logical_name, db_len);
+        db_name[db_len] = '\0';
+
+        const char *table = dot1 + 1;
+        if (!*table || strlen(table) > 255) return DE_ERR_INVAL;
+
+        written = snprintf(out_path, max_len, "%s/%s/%s%s",
+                           g_base_path, db_name, table, ext);
+        if (written < 0 || written >= (int)max_len) return DE_ERR_MEM;
+
+        dw = snprintf(dir_path, sizeof(dir_path), "%s/%s", g_base_path, db_name);
+    }
     else
-        return DE_ERR_INVAL;
+    {
+        /* Three-level: "dataset.database.table" */
+        int ds_len = (int)(dot1 - logical_name);
+        int db_len = (int)(dot2 - (dot1 + 1));
+        if (ds_len <= 0 || ds_len >= 64) return DE_ERR_INVAL;
+        if (db_len <= 0 || db_len >= 64) return DE_ERR_INVAL;
 
-    // Construct Path: base/db/table.ext
-    int written = snprintf(out_path, max_len, "%s/%s/%s%s", g_base_path, db_name, table_name, ext);
+        char ds_name[64], db_name[64];
+        strncpy(ds_name, logical_name, ds_len); ds_name[ds_len] = '\0';
+        strncpy(db_name, dot1 + 1,     db_len); db_name[db_len] = '\0';
 
-    if (written < 0 || written >= (int)max_len)
-        return DE_ERR_MEM;
+        const char *table = dot2 + 1;
+        if (!*table || strlen(table) > 255) return DE_ERR_INVAL;
 
-    // Ensure DB directory and parent directories exist.
-    char dir_path[MAX_PATH_LEN];
-    int dw = snprintf(dir_path, sizeof(dir_path), "%s/%s", g_base_path, db_name);
-    if (dw < 0 || dw >= (int)sizeof(dir_path))
-        return DE_ERR_MEM;
-    if (ensure_dir_recursive(dir_path) != DE_OK)
-        return DE_ERR_IO;
+        written = snprintf(out_path, max_len, "%s/%s/%s/%s%s",
+                           g_base_path, ds_name, db_name, table, ext);
+        if (written < 0 || written >= (int)max_len) return DE_ERR_MEM;
+
+        dw = snprintf(dir_path, sizeof(dir_path), "%s/%s/%s",
+                      g_base_path, ds_name, db_name);
+    }
+
+    if (dw < 0 || dw >= (int)sizeof(dir_path)) return DE_ERR_MEM;
+    if (ensure_dir_recursive(dir_path) != DE_OK) return DE_ERR_IO;
 
     return DE_OK;
 }
@@ -195,149 +216,9 @@ static int ensure_parent_dir_exists(const char *path)
     return ensure_dir_recursive(tmp);
 }
 
-int de_config_load(const char *ini_path, tharavuConfig *cfg)
-{
-    memset(cfg, 0, sizeof(tharavuConfig));
-    strcpy(cfg->data_dir, "./data");
-    cfg->dim = 64;
-    cfg->hash_cap = 131072;
-
-    FILE *fp = fopen(ini_path, "r");
-    if (!fp)
-    {
-        if (errno == ENOENT)
-        {
-            /* Auto-create INI file if missing (development-friendly, but risky
-             * in production where missing config should be an explicit error).
-             * For strict configuration loading, use de_config_load_strict(). */
-            if (ensure_parent_dir_exists(ini_path) != DE_OK)
-                return DE_ERR_IO;
-
-            FILE *out = fopen(ini_path, "w");
-            if (!out)
-                return DE_ERR_IO;
-
-            fprintf(out,
-                "# Tharavu default configuration\n"
-                "[paths]\n"
-                "data_dir = ./data\n"
-                "\n"
-                "[engine]\n"
-                "dim = 64\n"
-                "hash_cap = 131072\n"
-            );
-            fclose(out);
-            ensure_dir_recursive(cfg->data_dir);
-            return DE_OK;
-        }
-        return DE_ERR_IO;
-    }
-
-    char line[512];
-    while (fgets(line, sizeof(line), fp))
-    {
-        if (line[0] == '#' || line[0] == '[' || line[0] == '\n')
-            continue;
-        char key[64], val[256];
-        if (sscanf(line, "%63[^=] = %255[^\n]", key, val) == 2)
-        {
-            char *kend = key + strlen(key) - 1;
-            while (kend > key && isspace((unsigned char)*kend))
-                *kend-- = '\0';
-
-            char *v = val;
-            while (*v && isspace((unsigned char)*v))
-                v++;
-            char *end = v + strlen(v) - 1;
-            while (end > v && isspace((unsigned char)*end))
-                *end-- = '\0';
-            end[1] = '\0';
-
-            if (strcmp(key, "data_dir") == 0)
-            {
-                strncpy(cfg->data_dir, v, MAX_PATH_LEN - 1);
-                cfg->data_dir[MAX_PATH_LEN - 1] = '\0';
-            }
-            else if (strcmp(key, "dim") == 0)
-            {
-                char *endptr;
-                long val = strtol(v, &endptr, 10);
-                if (endptr != v && *endptr == '\0' && val > 0 && val <= 65536)
-                    cfg->dim = (int)val;
-                /* else: keep default; silently ignore invalid/out-of-range value */
-            }
-            else if (strcmp(key, "hash_cap") == 0)
-            {
-                char *endptr;
-                long val = strtol(v, &endptr, 10);
-                if (endptr != v && *endptr == '\0' && val > 0 && val <= 67108864)
-                    cfg->hash_cap = (int)val;
-            }
-        }
-    }
-    fclose(fp);
-
-    ensure_dir_recursive(cfg->data_dir);
-    return DE_OK;
-}
-
-int de_config_load_strict(const char *ini_path, tharavuConfig *cfg)
-{
-    memset(cfg, 0, sizeof(tharavuConfig));
-    strcpy(cfg->data_dir, "./data");
-    cfg->dim = 64;
-    cfg->hash_cap = 131072;
-
-    FILE *fp = fopen(ini_path, "r");
-    if (!fp)
-        return DE_ERR_IO; /* missing INI is a hard error in strict mode */
-
-    char line[512];
-    while (fgets(line, sizeof(line), fp))
-    {
-        if (line[0] == '#' || line[0] == '[' || line[0] == '\n')
-            continue;
-        char key[64], val[256];
-        if (sscanf(line, "%63[^=] = %255[^\n]", key, val) == 2)
-        {
-            char *kend = key + strlen(key) - 1;
-            while (kend > key && isspace((unsigned char)*kend))
-                *kend-- = '\0';
-
-            char *v = val;
-            while (*v && isspace((unsigned char)*v))
-                v++;
-            char *end = v + strlen(v) - 1;
-            while (end > v && isspace((unsigned char)*end))
-                *end-- = '\0';
-            end[1] = '\0';
-
-            if (strcmp(key, "data_dir") == 0)
-            {
-                strncpy(cfg->data_dir, v, MAX_PATH_LEN - 1);
-                cfg->data_dir[MAX_PATH_LEN - 1] = '\0';
-            }
-            else if (strcmp(key, "dim") == 0)
-            {
-                char *endptr;
-                long lv = strtol(v, &endptr, 10);
-                if (endptr != v && *endptr == '\0' && lv > 0 && lv <= 65536)
-                    cfg->dim = (int)lv;
-            }
-            else if (strcmp(key, "hash_cap") == 0)
-            {
-                char *endptr;
-                long lv = strtol(v, &endptr, 10);
-                if (endptr != v && *endptr == '\0' && lv > 0 && lv <= 67108864)
-                    cfg->hash_cap = (int)lv;
-            }
-        }
-    }
-    fclose(fp);
-
-    ensure_dir_recursive(cfg->data_dir);
-    return DE_OK;
-}
+/* de_config_load / de_config_load_strict REMOVED 2026-05-29.
+ * Config reading moved to caller via SLispManager + slm_load().
+ * See tde_set_base_path() / tde_set_dim() / tde_set_hash_cap() in tharavu_dll.h. */
 
 /* --- Table Creation --- */
 table_t *de_create_table(const char **col_names, int col_count)

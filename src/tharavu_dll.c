@@ -80,19 +80,27 @@ THARAVU_API int THARAVU_CALL tde_abi_version(void)   { return THARAVU_ABI_VERSIO
 
 /* ── Global configuration ────────────────────────────────────────────────── */
 
+static uint32_t g_dim      = 64;
+static uint32_t g_hash_cap = 131072;
+
 THARAVU_API void THARAVU_CALL tde_set_base_path(const char *path)
 {
     de_set_base_path(path);
 }
 
-THARAVU_API int THARAVU_CALL tde_config_load(const char *ini_path)
+THARAVU_API const char *THARAVU_CALL tde_get_base_path(void)
 {
-    g_last_err = TDE_OK;
-    tharavuConfig cfg;
-    int res = de_config_load(ini_path, &cfg);
-    if (res != DE_OK) return set_err(res);
-    de_set_base_path(cfg.data_dir);
-    return TDE_OK;
+    return de_get_base_path();
+}
+
+THARAVU_API void THARAVU_CALL tde_set_dim(uint32_t dim)
+{
+    g_dim = dim;
+}
+
+THARAVU_API void THARAVU_CALL tde_set_hash_cap(uint32_t cap)
+{
+    g_hash_cap = cap;
 }
 
 /* ── Table lifecycle ─────────────────────────────────────────────────────── */

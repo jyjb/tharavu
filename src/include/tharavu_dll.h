@@ -71,6 +71,52 @@ typedef void *tde_handle_t;
 #define TDE_FILE_ODAT   1   /* Tabular row/column data          */
 #define TDE_FILE_OVOC   2   /* Vocabulary hash table (.ovoc)    */
 #define TDE_FILE_OVEC   3   /* Embedding vectors (.ovec)        */
+#define TDE_FILE_OGPH   4   /* CSR graph (.ogph)                */
+
+/* ── OGPH graph file constants ───────────────────────────────────────────── */
+
+/* Header flags */
+#define OGPH_FLAG_DIRECTED  0x0001
+#define OGPH_FLAG_WEIGHTED  0x0002
+#define OGPH_FLAG_TYPED     0x0004
+#define OGPH_FLAG_EMBEDDED  0x0008
+
+/* Node type IDs — cognitive primitives */
+#define OGPH_NODE_OBJECT        0x01
+#define OGPH_NODE_ACTOR         0x02
+#define OGPH_NODE_ACTION        0x03
+#define OGPH_NODE_STATE         0x04
+#define OGPH_NODE_GOAL          0x05
+#define OGPH_NODE_DEPENDENCY    0x06
+#define OGPH_NODE_CONSTRAINT    0x07
+#define OGPH_NODE_RESOURCE      0x08
+#define OGPH_NODE_RELATIONSHIP  0x09
+#define OGPH_NODE_TRANSITION    0x0A
+#define OGPH_NODE_CONTEXT       0x0B
+#define OGPH_NODE_VALIDATION    0x0C
+#define OGPH_NODE_FAILURE       0x0D
+#define OGPH_NODE_RECOVERY      0x0E
+#define OGPH_NODE_POLICY        0x0F
+#define OGPH_NODE_CONTRADICTION 0x10
+#define OGPH_NODE_CONCEPT       0x11  /* generic domain concept */
+
+/* Edge type IDs — knowledge graph */
+#define OGPH_EDGE_IS_A          0x0001
+#define OGPH_EDGE_HAS           0x0002
+#define OGPH_EDGE_REQUIRES      0x0003
+#define OGPH_EDGE_PERFORMS      0x0004
+#define OGPH_EDGE_PRODUCES      0x0005
+#define OGPH_EDGE_RELATED_TO    0x0006
+#define OGPH_EDGE_CONSTRAINS    0x0007
+/* Edge type IDs — semantic graph */
+#define OGPH_EDGE_DEPENDS_ON     0x0010
+#define OGPH_EDGE_TRANSITIONS_TO 0x0011
+#define OGPH_EDGE_CAUSAL         0x0012
+#define OGPH_EDGE_CONTRADICTS    0x0013
+#define OGPH_EDGE_RECOVERS_VIA   0x0014
+
+/* Edge flags */
+#define OGPH_EDGE_FLAG_LOW_CONFIDENCE 0x0001
 
 /* Error codes — matches DE_ERR_* in tharavu_types.h */
 #define TDE_OK           0
@@ -109,14 +155,34 @@ THARAVU_API int THARAVU_CALL tde_abi_version(void);
  * Default: "./data".  Call before any tde_open_* / tde_build_* functions.  */
 THARAVU_API void THARAVU_CALL tde_set_base_path(const char *path);
 
-/* Load engine settings from an INI file (data_dir, dim, hash_cap keys).
- * Also calls tde_set_base_path() with the loaded data_dir value.
- * Creates the INI file and data directory if they do not exist (dev-friendly).
- * WARNING: This auto-creation is risky in production. In production environments
- * where missing config should be an explicit error, manually validate that the
- * INI exists and return an error if not — or pass --strict to your CLI tools.
- * Returns TDE_OK on success.                                                */
-THARAVU_API int  THARAVU_CALL tde_config_load(const char *ini_path);
+/* Return the current base path set by tde_set_base_path().
+ * Returns a pointer to internal storage — valid until the next tde_set_base_path() call. */
+THARAVU_API const char *THARAVU_CALL tde_get_base_path(void);
+
+/* Set the embedding vector dimension.
+ * Must be called before any OVEC or OVOC operations.
+ * Default: 64 */
+THARAVU_API void THARAVU_CALL tde_set_dim(uint32_t dim);
+
+/* Set the vocabulary hash table capacity.
+ * Must be called before any OVOC operations.
+ * Default: 131072 */
+THARAVU_API void THARAVU_CALL tde_set_hash_cap(uint32_t cap);
+
+/*
+ * tde_config_load() REMOVED 2026-05-29
+ * Config reading moved to caller via SLispManager + slm_load().
+ *
+ * Migration:
+ *   slm_node_t *cfg = slm_load("thiraviyan.ocfg");
+ *   slm_node_t *t   = slm_find(cfg, "tharavu");
+ *   char base[512];
+ *   slm_resolve_path(cfg, slm_attr(t, "base_path"), base, sizeof(base));
+ *   tde_set_base_path(base);
+ *   tde_set_dim((uint32_t)slm_attr_i(t, "dim", 64));
+ *   tde_set_hash_cap((uint32_t)slm_attr_i(t, "hash_cap", 131072));
+ *   slm_free(cfg);
+ */
 
 /* ── Table lifecycle ─────────────────────────────────────────────────────── */
 
@@ -362,6 +428,11 @@ THARAVU_API const char *THARAVU_CALL tde_strerror(int code);
 /* Last error code recorded on the calling thread.
  * Reset to TDE_OK at the start of every API call.                          */
 THARAVU_API int THARAVU_CALL tde_last_error(void);
+
+/* ── Graph API (ogph.h / ogph_builder.h) ─────────────────────────────────── */
+/* Callers get the full tgph_* graph API from a single tharavu_dll.h include. */
+#include "ogph.h"
+#include "ogph_builder.h"
 
 #ifdef __cplusplus
 }

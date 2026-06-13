@@ -1,52 +1,75 @@
-LIBRARY tharavu.dll
-VERSION 1.0
 EXPORTS
-tde_abi_version
-tde_build_vectors
-tde_build_vectors_logical
-tde_build_vocab
-tde_build_vocab_logical
-tde_close
-tde_col_count
-tde_col_name
-tde_config_load
-tde_create
-tde_delete_row
-tde_export_csv
-tde_file_type
-tde_find
-tde_find_ids
-tde_get_cell_type
-tde_get_float32
-tde_get_int32
-tde_get_string
-tde_last_error
-tde_open
-tde_open_odat
-tde_open_ovec
-tde_open_ovoc
-tde_row_begin
-tde_row_commit
-tde_row_count
-tde_row_discard
-tde_row_set_float32
-tde_row_set_int32
-tde_row_set_string
-tde_save
-tde_save_logical
-tde_set_base_path
-tde_strerror
-tde_update_float32
-tde_update_int32
-tde_update_string
-tde_vector_get_batch
-tde_vector_get_ptr
-tde_vector_get_row
-tde_vector_search_topk
-tde_version_major
-tde_version_minor
-tde_vocab_lookup
-tde_vocab_lookup_batch
-tde_vocab_reverse_batch
-tde_vocab_reverse_lookup
-tde_vocab_reverse_lookup_ex
+  tde_abi_version
+  tde_build_vectors
+  tde_build_vectors_logical
+  tde_build_vocab
+  tde_build_vocab_logical
+  tde_close
+  tde_col_count
+  tde_col_name
+  tde_create
+  tde_delete_row
+  tde_export_csv
+  tde_file_type
+  tde_find
+  tde_find_ids
+  tde_get_cell_type
+  tde_get_float32
+  tde_get_int32
+  tde_get_string
+  tde_last_error
+  tde_open
+  tde_open_odat
+  tde_open_ovec
+  tde_open_ovoc
+  tde_row_begin
+  tde_row_commit
+  tde_row_count
+  tde_row_discard
+  tde_row_set_float32
+  tde_row_set_int32
+  tde_row_set_string
+  tde_save
+  tde_save_logical
+  tde_get_base_path
+  tde_set_base_path
+  tde_set_dim
+  tde_set_hash_cap
+  tde_strerror
+  tde_update_float32
+  tde_update_int32
+  tde_update_string
+  tde_vector_get_batch
+  tde_vector_get_ptr
+  tde_vector_get_row
+  tde_vector_search_topk
+  tde_version_major
+  tde_version_minor
+  tde_vocab_lookup
+  tde_vocab_lookup_batch
+  tde_vocab_reverse_batch
+  tde_vocab_reverse_lookup
+  tde_vocab_reverse_lookup_ex
+  tgph_builder_add_edge
+  tgph_builder_add_node
+  tgph_builder_create
+  tgph_builder_finalise
+  tgph_builder_finalise_logical
+  tgph_builder_free
+  tgph_close
+  tgph_edge_count_total
+  tgph_embed_dim
+  tgph_find_node
+  tgph_flags
+  tgph_next_edge
+  tgph_node_count
+  tgph_node_embed
+  tgph_node_flags
+  tgph_node_id
+  tgph_node_label
+  tgph_node_type
+  tgph_open
+  tgph_open_logical
+  tgph_out_degree
+  tgph_save
+  tgph_save_logical
